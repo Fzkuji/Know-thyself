@@ -33,7 +33,7 @@ class BaselineEvaluator:
         self.model.eval()
         self.inference_batch_size = inference_batch_size
 
-    def predict_ability(self, question: str) -> str:
+    def predict_ability(self, question: str, debug: bool = False) -> str:
         """Ask model to assess its ability to answer."""
         prompt = f"Before answering, assess your ability to answer this question:\n{question}"
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
@@ -51,6 +51,9 @@ class BaselineEvaluator:
             outputs[0][inputs["input_ids"].shape[1]:],
             skip_special_tokens=True
         ).strip().lower()
+
+        if debug:
+            print(f"[DEBUG] Response: {response[:100]}...")
 
         if "i can answer" in response or "can answer" in response:
             return "can"
@@ -123,8 +126,10 @@ class BaselineEvaluator:
 
             # 1. Get predicted abilities for batch (still one at a time for simplicity)
             predicted_abilities = []
-            for sample in batch_samples:
-                predicted = self.predict_ability(sample["question"])
+            for idx, sample in enumerate(batch_samples):
+                # Debug first 3 samples
+                debug = (batch_start == 0 and idx < 3)
+                predicted = self.predict_ability(sample["question"], debug=debug)
                 predicted_abilities.append(predicted)
 
             # 2. Batch generate responses for all questions in batch
