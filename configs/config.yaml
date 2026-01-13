@@ -1,0 +1,40 @@
+# Know-thyself Configuration
+
+# Data settings
+data:
+  dataset: "trivia_qa"
+  subset: "rc.nocontext"
+  num_samples: 1000
+  split: "validation"
+
+# Inference settings
+inference:
+  num_trials: 5  # Query each question 5 times
+  temperature: 0.7
+  max_new_tokens: 64
+
+# Evaluation settings
+evaluation:
+  threshold_uncertain: 1.0  # Below 100% = uncertain
+  threshold_cannot: 0.5     # Below 50% = cannot
+
+# Training settings
+training:
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  epochs: 3
+  batch_size: 4
+  learning_rate: 2e-4
+  max_length: 512
+
+# Model settings
+model:
+  base_model: "meta-llama/Llama-2-7b-chat-hf"
+  # Alternative: "mistralai/Mistral-7B-Instruct-v0.2"
+
+# Analysis (optional, for future use)
+analysis:
+  model: "gpt-4o"
+  enabled: false
