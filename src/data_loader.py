@@ -17,7 +17,7 @@ def load_triviaqa(split: str = "train", num_samples: Optional[int] = None) -> Li
     Returns:
         List of samples with 'question' and 'answers' fields
     """
-    dataset = load_dataset("trivia_qa", "rc.nocontext", split=split)
+    dataset = load_dataset("mandarjoshi/trivia_qa", "rc.nocontext", split=split)
 
     samples = []
     for i, item in enumerate(dataset):
