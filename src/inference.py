@@ -45,27 +45,34 @@ class ModelInference:
         Returns:
             List of generated responses
         """
-        # Use num_return_sequences for parallel sampling
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                do_sample=True,
-                num_return_sequences=num_samples,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-
         responses = []
-        input_len = inputs["input_ids"].shape[1]
-        for i in range(num_samples):
-            response = self.tokenizer.decode(
-                outputs[i][input_len:],
-                skip_special_tokens=True
-            ).strip()
-            responses.append(response)
+        remaining = num_samples
+
+        # Generate in batches to control memory usage
+        while remaining > 0:
+            batch_size = min(remaining, self.inference_batch_size)
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    do_sample=True,
+                    num_return_sequences=batch_size,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+
+            input_len = inputs["input_ids"].shape[1]
+            for i in range(batch_size):
+                response = self.tokenizer.decode(
+                    outputs[i][input_len:],
+                    skip_special_tokens=True
+                ).strip()
+                responses.append(response)
+
+            remaining -= batch_size
 
         return responses
 
