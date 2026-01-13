@@ -28,6 +28,7 @@ def run_step(step: int, args: argparse.Namespace):
             "--num_samples", str(args.test_samples),
             "--num_trials", str(args.num_trials),
             "--split", args.test_split,
+            "--inference_batch_size", str(args.inference_batch_size),
         ]
     elif step == 1:
         cmd = [
@@ -37,6 +38,7 @@ def run_step(step: int, args: argparse.Namespace):
             "--num_samples", str(args.num_samples),
             "--num_trials", str(args.num_trials),
             "--split", args.train_split,
+            "--inference_batch_size", str(args.inference_batch_size),
         ]
     elif step == 2:
         cmd = [
@@ -61,6 +63,7 @@ def run_step(step: int, args: argparse.Namespace):
             "--num_samples", str(args.test_samples),
             "--num_trials", str(args.num_trials),
             "--split", args.test_split,
+            "--inference_batch_size", str(args.inference_batch_size),
         ]
     else:
         raise ValueError(f"Unknown step: {step}")
@@ -79,6 +82,7 @@ def main():
     parser.add_argument("--num_samples", type=int, default=1000, help="Training samples (step 1)")
     parser.add_argument("--test_samples", type=int, default=100, help="Test samples (step 0/4)")
     parser.add_argument("--num_trials", type=int, default=5)
+    parser.add_argument("--inference_batch_size", type=int, default=16, help="Batch size for inference")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--train_split", type=str, default="train", help="Split for training data")

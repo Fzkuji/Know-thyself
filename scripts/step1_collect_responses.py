@@ -1,5 +1,6 @@
 """
 Step 1: Collect model responses for each question (query 5 times).
+Supports batch inference for better GPU utilization.
 """
 
 import argparse
@@ -18,6 +19,7 @@ def main():
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of questions")
     parser.add_argument("--num_trials", type=int, default=5, help="Queries per question")
+    parser.add_argument("--inference_batch_size", type=int, default=8, help="Batch size for inference")
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--output", type=str, default=str(project_root / "data/step1_responses.jsonl"))
     parser.add_argument("--split", type=str, default="validation")
@@ -28,7 +30,11 @@ def main():
     print(f"Loaded {len(samples)} samples")
 
     print(f"Loading model: {args.model}")
-    model = ModelInference(model_name=args.model)
+    print(f"Inference batch size: {args.inference_batch_size}")
+    model = ModelInference(
+        model_name=args.model,
+        inference_batch_size=args.inference_batch_size,
+    )
 
     print(f"Running inference ({args.num_trials} trials per question)...")
     results = model.batch_inference(

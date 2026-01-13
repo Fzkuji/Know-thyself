@@ -2,6 +2,7 @@
 Step 0: Baseline evaluation - test original model's metacognition ability.
 
 Same as step 4 but uses the base model without LoRA fine-tuning.
+Supports batch inference for better GPU utilization.
 """
 
 import argparse
@@ -17,106 +18,100 @@ from src.data_loader import load_triviaqa
 from src.evaluator import is_correct, classify_ability
 
 
-def load_base_model(model_name: str):
-    """Load base model without LoRA."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+class BaselineEvaluator:
+    def __init__(self, model_name: str, inference_batch_size: int = 16):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
-    model.eval()
-
-    return model, tokenizer
-
-
-def predict_ability(model, tokenizer, question: str) -> str:
-    """Ask model to assess its ability to answer."""
-    prompt = f"Before answering, assess your ability to answer this question:\n{question}"
-
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=32,
-            temperature=0.1,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id,
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
         )
+        self.model.eval()
+        self.inference_batch_size = inference_batch_size
 
-    response = tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:],
-        skip_special_tokens=True
-    ).strip().lower()
+    def predict_ability(self, question: str) -> str:
+        """Ask model to assess its ability to answer."""
+        prompt = f"Before answering, assess your ability to answer this question:\n{question}"
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
-    # Parse response to ability
-    if "i can answer" in response or "can answer" in response:
-        return "can"
-    elif "uncertain" in response:
-        return "uncertain"
-    else:
-        return "cannot"
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=32,
+                temperature=0.1,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
 
+        response = self.tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True
+        ).strip().lower()
 
-def answer_question(model, tokenizer, question: str) -> str:
-    """Get model's actual answer to the question."""
-    prompt = f"Question: {question}\nAnswer:"
+        if "i can answer" in response or "can answer" in response:
+            return "can"
+        elif "uncertain" in response:
+            return "uncertain"
+        else:
+            return "cannot"
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    def answer_question_batch(self, question: str, num_trials: int) -> list:
+        """Get multiple answers for a question using batch generation."""
+        prompt = f"Question: {question}\nAnswer:"
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=64,
-            temperature=0.7,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=64,
+                temperature=0.7,
+                do_sample=True,
+                num_return_sequences=num_trials,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
 
-    response = tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:],
-        skip_special_tokens=True
-    ).strip()
-
-    return response
-
-
-def evaluate_metacognition(model, tokenizer, samples, num_trials: int = 5):
-    """Evaluate metacognition accuracy."""
-    results = []
-
-    for sample in tqdm(samples, desc="Evaluating baseline"):
-        question = sample["question"]
-        gold_answers = sample.get("normalized_answers", sample["answers"])
-
-        # 1. Get predicted ability
-        predicted = predict_ability(model, tokenizer, question)
-
-        # 2. Test actual ability (answer N times)
-        correct_count = 0
         responses = []
-        for _ in range(num_trials):
-            response = answer_question(model, tokenizer, question)
+        input_len = inputs["input_ids"].shape[1]
+        for i in range(num_trials):
+            response = self.tokenizer.decode(
+                outputs[i][input_len:],
+                skip_special_tokens=True
+            ).strip()
             responses.append(response)
-            if is_correct(response, gold_answers):
-                correct_count += 1
 
-        accuracy = correct_count / num_trials
-        actual = classify_ability(accuracy)
+        return responses
 
-        results.append({
-            "question": question,
-            "predicted": predicted,
-            "actual": actual,
-            "accuracy": accuracy,
-            "correct_count": correct_count,
-        })
+    def evaluate(self, samples, num_trials: int = 5):
+        """Evaluate metacognition accuracy with batch inference."""
+        results = []
 
-    return results
+        for sample in tqdm(samples, desc="Evaluating baseline"):
+            question = sample["question"]
+            gold_answers = sample.get("normalized_answers", sample["answers"])
+
+            # 1. Get predicted ability
+            predicted = self.predict_ability(question)
+
+            # 2. Test actual ability (batch generate num_trials responses)
+            responses = self.answer_question_batch(question, num_trials)
+            correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
+
+            accuracy = correct_count / num_trials
+            actual = classify_ability(accuracy)
+
+            results.append({
+                "question": question,
+                "predicted": predicted,
+                "actual": actual,
+                "accuracy": accuracy,
+                "correct_count": correct_count,
+            })
+
+        return results
 
 
 def compute_metrics(results):
@@ -158,6 +153,7 @@ def main():
     parser.add_argument("--num_samples", type=int, default=100)
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--split", type=str, default="test")
+    parser.add_argument("--inference_batch_size", type=int, default=16)
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
@@ -165,10 +161,11 @@ def main():
     print(f"Loaded {len(samples)} samples")
 
     print(f"Loading base model: {args.model}")
-    model, tokenizer = load_base_model(args.model)
+    print(f"Inference batch size: {args.inference_batch_size}")
+    evaluator = BaselineEvaluator(args.model, args.inference_batch_size)
 
     print(f"Evaluating baseline metacognition ({args.num_trials} trials per question)...")
-    results = evaluate_metacognition(model, tokenizer, samples, args.num_trials)
+    results = evaluator.evaluate(samples, args.num_trials)
 
     metrics = compute_metrics(results)
 
