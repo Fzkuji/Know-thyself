@@ -179,35 +179,29 @@ class TrainedModelEvaluator:
 def compute_metrics(results):
     """Compute evaluation metrics."""
     total = len(results)
+    abilities = ["can", "uncertain", "cannot"]
 
-    # Exact match (predicted == actual)
     exact_match = sum(1 for r in results if r["predicted"] == r["actual"])
 
-    # Confusion matrix for can/cannot (treating uncertain as cannot for simplicity)
-    def simplify(ability):
-        return "can" if ability == "can" else "cannot"
+    # 3x3 confusion matrix
+    confusion = {}
+    for pred in abilities:
+        for actual in abilities:
+            confusion[f"{pred}_{actual}"] = sum(
+                1 for r in results if r["predicted"] == pred and r["actual"] == actual
+            )
 
-    tp = sum(1 for r in results if simplify(r["predicted"]) == "can" and simplify(r["actual"]) == "can")
-    tn = sum(1 for r in results if simplify(r["predicted"]) == "cannot" and simplify(r["actual"]) == "cannot")
-    fp = sum(1 for r in results if simplify(r["predicted"]) == "can" and simplify(r["actual"]) == "cannot")  # Overconfident
-    fn = sum(1 for r in results if simplify(r["predicted"]) == "cannot" and simplify(r["actual"]) == "can")  # Underconfident
-
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    # Count per category
+    pred_counts = {a: sum(1 for r in results if r["predicted"] == a) for a in abilities}
+    actual_counts = {a: sum(1 for r in results if r["actual"] == a) for a in abilities}
 
     return {
         "total": total,
         "exact_match": exact_match,
-        "exact_match_rate": exact_match / total,
-        "true_positive": tp,
-        "true_negative": tn,
-        "false_positive": fp,  # Overconfident
-        "false_negative": fn,  # Underconfident
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "accuracy": (tp + tn) / total,
+        "exact_match_rate": exact_match / total if total > 0 else 0,
+        "confusion": confusion,
+        "pred_counts": pred_counts,
+        "actual_counts": actual_counts,
     }
 
 
@@ -236,20 +230,24 @@ def main():
     metrics = compute_metrics(results)
 
     print("\n" + "=" * 60)
-    print("EVALUATION RESULTS")
+    print("EVALUATION RESULTS (After Training)")
     print("=" * 60)
     print(f"Total samples: {metrics['total']}")
     print(f"\nExact match (predicted == actual): {metrics['exact_match']} ({metrics['exact_match_rate']*100:.1f}%)")
-    print(f"\nConfusion Matrix (can vs cannot):")
-    print(f"  True Positive (correctly confident):  {metrics['true_positive']}")
-    print(f"  True Negative (correctly uncertain):  {metrics['true_negative']}")
-    print(f"  False Positive (overconfident):       {metrics['false_positive']}")
-    print(f"  False Negative (underconfident):      {metrics['false_negative']}")
-    print(f"\nMetrics:")
-    print(f"  Accuracy:  {metrics['accuracy']*100:.1f}%")
-    print(f"  Precision: {metrics['precision']*100:.1f}%")
-    print(f"  Recall:    {metrics['recall']*100:.1f}%")
-    print(f"  F1 Score:  {metrics['f1']*100:.1f}%")
+
+    # 3x3 Confusion Matrix
+    c = metrics["confusion"]
+    print(f"\nConfusion Matrix (rows=predicted, cols=actual):")
+    print(f"                 can    uncertain    cannot")
+    print(f"  can          {c['can_can']:5d}    {c['can_uncertain']:5d}        {c['can_cannot']:5d}")
+    print(f"  uncertain    {c['uncertain_can']:5d}    {c['uncertain_uncertain']:5d}        {c['uncertain_cannot']:5d}")
+    print(f"  cannot       {c['cannot_can']:5d}    {c['cannot_uncertain']:5d}        {c['cannot_cannot']:5d}")
+
+    # Category counts
+    pred = metrics["pred_counts"]
+    actual = metrics["actual_counts"]
+    print(f"\nPredicted distribution: can={pred['can']}, uncertain={pred['uncertain']}, cannot={pred['cannot']}")
+    print(f"Actual distribution:    can={actual['can']}, uncertain={actual['uncertain']}, cannot={actual['cannot']}")
 
     # Show some examples
     print("\n" + "=" * 60)
