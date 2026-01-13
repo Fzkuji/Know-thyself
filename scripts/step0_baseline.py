@@ -59,65 +59,94 @@ class BaselineEvaluator:
         else:
             return "cannot"
 
-    def answer_question_batch(self, question: str, num_trials: int) -> list:
-        """Get multiple answers for a question using batch generation."""
-        prompt = f"Question: {question}\nAnswer:"
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+    def answer_questions_batch(self, questions: list, num_trials: int) -> list:
+        """
+        Get multiple answers for multiple questions using true batch generation.
 
-        responses = []
-        remaining = num_trials
+        Args:
+            questions: List of questions to answer
+            num_trials: Number of responses per question
 
-        # Generate in batches to control memory usage
-        while remaining > 0:
-            batch_size = min(remaining, self.inference_batch_size)
+        Returns:
+            List of lists, each containing num_trials responses for each question
+        """
+        # Create prompts for all questions, repeated num_trials times
+        prompts = []
+        for question in questions:
+            prompt = f"Question: {question}\nAnswer:"
+            prompts.extend([prompt] * num_trials)
 
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=64,
-                    temperature=0.7,
-                    do_sample=True,
-                    num_return_sequences=batch_size,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                )
+        # Batch tokenize all prompts
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(self.model.device)
 
-            input_len = inputs["input_ids"].shape[1]
-            for i in range(batch_size):
-                response = self.tokenizer.decode(
-                    outputs[i][input_len:],
-                    skip_special_tokens=True
-                ).strip()
-                responses.append(response)
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=64,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
 
-            remaining -= batch_size
+        # Decode all responses
+        all_responses = []
+        for i, output in enumerate(outputs):
+            input_len = (inputs["attention_mask"][i] == 1).sum().item()
+            response = self.tokenizer.decode(
+                output[input_len:],
+                skip_special_tokens=True
+            ).strip()
+            all_responses.append(response)
 
-        return responses
+        # Group responses by question
+        results = []
+        for i in range(len(questions)):
+            start_idx = i * num_trials
+            end_idx = start_idx + num_trials
+            results.append(all_responses[start_idx:end_idx])
+
+        return results
 
     def evaluate(self, samples, num_trials: int = 5):
         """Evaluate metacognition accuracy with batch inference."""
         results = []
 
-        for sample in tqdm(samples, desc="Evaluating baseline"):
-            question = sample["question"]
-            gold_answers = sample.get("normalized_answers", sample["answers"])
+        # Process samples in batches
+        for batch_start in tqdm(range(0, len(samples), self.inference_batch_size), desc="Evaluating baseline"):
+            batch_end = min(batch_start + self.inference_batch_size, len(samples))
+            batch_samples = samples[batch_start:batch_end]
 
-            # 1. Get predicted ability
-            predicted = self.predict_ability(question)
+            # 1. Get predicted abilities for batch (still one at a time for simplicity)
+            predicted_abilities = []
+            for sample in batch_samples:
+                predicted = self.predict_ability(sample["question"])
+                predicted_abilities.append(predicted)
 
-            # 2. Test actual ability (batch generate num_trials responses)
-            responses = self.answer_question_batch(question, num_trials)
-            correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
+            # 2. Batch generate responses for all questions in batch
+            questions = [s["question"] for s in batch_samples]
+            all_responses = self.answer_questions_batch(questions, num_trials)
 
-            accuracy = correct_count / num_trials
-            actual = classify_ability(accuracy)
+            # 3. Evaluate each sample
+            for i, sample in enumerate(batch_samples):
+                gold_answers = sample.get("normalized_answers", sample["answers"])
+                responses = all_responses[i]
+                correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
 
-            results.append({
-                "question": question,
-                "predicted": predicted,
-                "actual": actual,
-                "accuracy": accuracy,
-                "correct_count": correct_count,
-            })
+                accuracy = correct_count / num_trials
+                actual = classify_ability(accuracy)
+
+                results.append({
+                    "question": sample["question"],
+                    "predicted": predicted_abilities[i],
+                    "actual": actual,
+                    "accuracy": accuracy,
+                    "correct_count": correct_count,
+                })
 
         return results
 
