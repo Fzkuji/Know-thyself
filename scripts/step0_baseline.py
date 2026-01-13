@@ -246,11 +246,11 @@ def main():
 
     # 3x3 Confusion Matrix
     c = metrics["confusion"]
-    print(f"\nConfusion Matrix (rows=predicted, cols=actual):")
-    print(f"                 can    uncertain    cannot")
-    print(f"  can          {c['can_can']:5d}    {c['can_uncertain']:5d}        {c['can_cannot']:5d}")
-    print(f"  uncertain    {c['uncertain_can']:5d}    {c['uncertain_uncertain']:5d}        {c['uncertain_cannot']:5d}")
-    print(f"  cannot       {c['cannot_can']:5d}    {c['cannot_uncertain']:5d}        {c['cannot_cannot']:5d}")
+    print(f"\nConfusion Matrix:")
+    print(f"                      actual_can  actual_uncertain  actual_cannot")
+    print(f"  predicted_can          {c['can_can']:5d}           {c['can_uncertain']:5d}            {c['can_cannot']:5d}")
+    print(f"  predicted_uncertain    {c['uncertain_can']:5d}           {c['uncertain_uncertain']:5d}            {c['uncertain_cannot']:5d}")
+    print(f"  predicted_cannot       {c['cannot_can']:5d}           {c['cannot_uncertain']:5d}            {c['cannot_cannot']:5d}")
 
     # Category counts
     pred = metrics["pred_counts"]
