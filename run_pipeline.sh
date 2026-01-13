@@ -27,7 +27,7 @@ echo "[Step 0/5] Baseline evaluation (before training)..."
 python run.py --step 0 \
     --model "$MODEL" \
     --test_samples "$TEST_SAMPLES" \
-    --test_split test \
+    --test_split validation \
     --inference_batch_size "$INFERENCE_BATCH_SIZE"
 
 # Step 1: Collect responses on train split
@@ -58,7 +58,7 @@ echo "[Step 4/5] Evaluating on test split (after training)..."
 python run.py --step 4 \
     --model "$MODEL" \
     --test_samples "$TEST_SAMPLES" \
-    --test_split test \
+    --test_split validation \
     --inference_batch_size "$INFERENCE_BATCH_SIZE"
 
 echo ""
