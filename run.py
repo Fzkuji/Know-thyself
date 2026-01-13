@@ -2,10 +2,11 @@
 Know-thyself: Main entry point for running the full pipeline.
 
 Usage:
+    python run.py --step 0  # Baseline evaluation (before training)
     python run.py --step 1  # Collect responses (train split)
     python run.py --step 2  # Build training dataset
     python run.py --step 3  # Train model
-    python run.py --step 4  # Evaluate on test set
+    python run.py --step 4  # Evaluate on test set (after training)
     python run.py --step all  # Run steps 1-3
 """
 
@@ -19,7 +20,16 @@ def run_step(step: int, args: argparse.Namespace):
     """Run a specific step of the pipeline."""
     scripts_dir = Path(__file__).parent / "scripts"
 
-    if step == 1:
+    if step == 0:
+        cmd = [
+            sys.executable,
+            str(scripts_dir / "step0_baseline.py"),
+            "--model", args.model,
+            "--num_samples", str(args.test_samples),
+            "--num_trials", str(args.num_trials),
+            "--split", args.test_split,
+        ]
+    elif step == 1:
         cmd = [
             sys.executable,
             str(scripts_dir / "step1_collect_responses.py"),
@@ -64,10 +74,10 @@ def run_step(step: int, args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(description="Know-thyself: LLM Metacognition Training")
-    parser.add_argument("--step", type=str, default="all", help="Step to run (1/2/3/4/all)")
+    parser.add_argument("--step", type=str, default="all", help="Step to run (0/1/2/3/4/all)")
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--num_samples", type=int, default=1000, help="Training samples (step 1)")
-    parser.add_argument("--test_samples", type=int, default=100, help="Test samples (step 4)")
+    parser.add_argument("--test_samples", type=int, default=100, help="Test samples (step 0/4)")
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=4)
