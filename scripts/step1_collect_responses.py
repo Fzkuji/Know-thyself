@@ -4,7 +4,8 @@ Step 1: Collect model responses for each question (query 5 times).
 
 import argparse
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_loader import load_triviaqa, format_question_prompt
 from src.inference import ModelInference
@@ -17,7 +18,8 @@ def main():
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of questions")
     parser.add_argument("--num_trials", type=int, default=5, help="Queries per question")
-    parser.add_argument("--output", type=str, default="../data/step1_responses.jsonl")
+    project_root = Path(__file__).resolve().parent.parent
+    parser.add_argument("--output", type=str, default=str(project_root / "data/step1_responses.jsonl"))
     parser.add_argument("--split", type=str, default="validation")
     args = parser.parse_args()
 

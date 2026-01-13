@@ -4,7 +4,8 @@ Step 2: Build training dataset from collected responses.
 
 import argparse
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.dataset_builder import load_from_jsonl, save_to_jsonl
 from src.label_generator import build_training_dataset
@@ -12,8 +13,9 @@ from src.label_generator import build_training_dataset
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, default="../data/step1_responses.jsonl")
-    parser.add_argument("--output", type=str, default="../data/step2_training_data.jsonl")
+    project_root = Path(__file__).resolve().parent.parent
+    parser.add_argument("--input", type=str, default=str(project_root / "data/step1_responses.jsonl"))
+    parser.add_argument("--output", type=str, default=str(project_root / "data/step2_training_data.jsonl"))
     parser.add_argument("--include_reason", action="store_true", help="Include reasoning in labels")
     args = parser.parse_args()
 
