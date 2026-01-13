@@ -163,6 +163,13 @@ class BaselineEvaluator:
                 accuracy = correct_count / num_trials
                 actual = classify_ability(accuracy)
 
+                # Debug first 3 samples to check is_correct logic
+                if batch_start == 0 and i < 3:
+                    print(f"\n[DEBUG EVAL] Q: {sample['question'][:60]}...")
+                    print(f"[DEBUG EVAL] Gold answers: {gold_answers[:3]}...")
+                    print(f"[DEBUG EVAL] Model responses: {[r[:50] for r in responses[:2]]}...")
+                    print(f"[DEBUG EVAL] Correct: {correct_count}/{num_trials}, Actual ability: {actual}")
+
                 results.append({
                     "question": sample["question"],
                     "predicted": predicted_abilities[i],
