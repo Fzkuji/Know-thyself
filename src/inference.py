@@ -11,7 +11,7 @@ from tqdm import tqdm
 class ModelInference:
     def __init__(
         self,
-        model_name: str = "meta-llama/Llama-2-7b-chat-hf",
+        model_name: str = "Qwen/Qwen2.5-7B-Instruct",
         device: str = "auto",
         max_new_tokens: int = 64,
         temperature: float = 0.7,

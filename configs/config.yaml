@@ -31,8 +31,7 @@ training:
 
 # Model settings
 model:
-  base_model: "meta-llama/Llama-2-7b-chat-hf"
-  # Alternative: "mistralai/Mistral-7B-Instruct-v0.2"
+  base_model: "Qwen/Qwen2.5-7B-Instruct"
 
 # Analysis (optional, for future use)
 analysis:

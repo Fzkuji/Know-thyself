@@ -49,7 +49,7 @@ pip install -r requirements.txt
 
 ```bash
 # Run full pipeline
-python run.py --step all --model meta-llama/Llama-2-7b-chat-hf
+python run.py --step all --model Qwen/Qwen2.5-7B-Instruct
 
 # Or run steps individually
 python run.py --step 1 --num_samples 1000  # Collect responses

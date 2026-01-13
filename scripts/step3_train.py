@@ -12,7 +12,7 @@ from src.trainer import setup_model_for_training, train_metacognition
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-2-7b-chat-hf")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--input", type=str, default="../data/step2_training_data.jsonl")
     parser.add_argument("--output_dir", type=str, default="../outputs/metacog")
     parser.add_argument("--epochs", type=int, default=3)

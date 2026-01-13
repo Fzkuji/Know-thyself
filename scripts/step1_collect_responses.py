@@ -14,7 +14,7 @@ from src.dataset_builder import save_to_jsonl
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-2-7b-chat-hf")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of questions")
     parser.add_argument("--num_trials", type=int, default=5, help="Queries per question")
     parser.add_argument("--output", type=str, default="../data/step1_responses.jsonl")

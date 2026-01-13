@@ -54,7 +54,7 @@ def run_step(step: int, args: argparse.Namespace):
 def main():
     parser = argparse.ArgumentParser(description="Know-thyself: LLM Metacognition Training")
     parser.add_argument("--step", type=str, default="all", help="Step to run (1/2/3/all)")
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-2-7b-chat-hf")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=3)
