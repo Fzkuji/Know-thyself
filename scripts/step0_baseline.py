@@ -91,10 +91,14 @@ class BaselineEvaluator:
         Returns:
             List of lists, each containing num_trials responses for each question
         """
-        # Create prompts for all questions, repeated num_trials times
+        # Create prompts for all questions using chat template, repeated num_trials times
         prompts = []
         for question in questions:
-            prompt = f"Question: {question}\nAnswer:"
+            messages = [
+                {"role": "system", "content": "Answer the question concisely and directly."},
+                {"role": "user", "content": question}
+            ]
+            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             prompts.extend([prompt] * num_trials)
 
         # Batch tokenize all prompts
@@ -109,7 +113,7 @@ class BaselineEvaluator:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=64,
-                temperature=0.7,
+                temperature=1.0,
                 do_sample=True,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
@@ -152,7 +156,9 @@ class BaselineEvaluator:
 
             # 2. Batch generate responses for all questions in batch
             questions = [s["question"] for s in batch_samples]
+            print(f"\n[BATCH {batch_start}] Generating {len(questions)} x {num_trials} = {len(questions) * num_trials} responses...")
             all_responses = self.answer_questions_batch(questions, num_trials)
+            print(f"[BATCH {batch_start}] Generated {sum(len(r) for r in all_responses)} total responses")
 
             # 3. Evaluate each sample
             for i, sample in enumerate(batch_samples):

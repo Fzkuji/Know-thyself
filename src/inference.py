@@ -15,7 +15,7 @@ class ModelInference:
         model_name: str = "Qwen/Qwen2.5-7B-Instruct",
         device: str = "auto",
         max_new_tokens: int = 64,
-        temperature: float = 0.7,
+        temperature: float = 1.0,
         inference_batch_size: int = 8,  # Batch size for parallel generation
     ):
         self.model_name = model_name

@@ -86,7 +86,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--train_split", type=str, default="train", help="Split for training data")
-    parser.add_argument("--test_split", type=str, default="test", help="Split for evaluation")
+    parser.add_argument("--test_split", type=str, default="validation", help="Split for evaluation")
     parser.add_argument("--include_reason", action="store_true")
     args = parser.parse_args()
 

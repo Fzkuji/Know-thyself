@@ -90,10 +90,14 @@ class TrainedModelEvaluator:
         Returns:
             List of lists, each containing num_trials responses for each question
         """
-        # Create prompts for all questions, repeated num_trials times
+        # Create prompts for all questions using chat template, repeated num_trials times
         prompts = []
         for question in questions:
-            prompt = f"Question: {question}\nAnswer:"
+            messages = [
+                {"role": "system", "content": "Answer the question concisely and directly."},
+                {"role": "user", "content": question}
+            ]
+            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             prompts.extend([prompt] * num_trials)
 
         # Batch tokenize all prompts
@@ -108,7 +112,7 @@ class TrainedModelEvaluator:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=64,
-                temperature=0.7,
+                temperature=1.0,
                 do_sample=True,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
