@@ -43,20 +43,31 @@ def format_for_sft(sample: Dict, tokenizer=None) -> Dict:
     Format sample for supervised fine-tuning.
 
     Args:
-        sample: Training sample with 'input' and 'output'
+        sample: Training sample with 'messages' or 'input'/'output'
         tokenizer: Optional tokenizer for chat template
 
     Returns:
         Formatted sample
     """
     if tokenizer and hasattr(tokenizer, "apply_chat_template"):
-        messages = [
-            {"role": "user", "content": sample["input"]},
-            {"role": "assistant", "content": sample["output"]},
-        ]
+        # Use messages if available, otherwise create from input/output
+        if "messages" in sample:
+            messages = sample["messages"]
+        else:
+            messages = [
+                {"role": "user", "content": sample["input"]},
+                {"role": "assistant", "content": sample["output"]},
+            ]
         text = tokenizer.apply_chat_template(messages, tokenize=False)
     else:
-        text = f"### Instruction:\n{sample['input']}\n\n### Response:\n{sample['output']}"
+        # Fallback for non-chat models
+        if "messages" in sample:
+            # Extract from messages
+            user_msg = next((m["content"] for m in sample["messages"] if m["role"] == "user"), "")
+            assistant_msg = next((m["content"] for m in sample["messages"] if m["role"] == "assistant"), "")
+            text = f"### Instruction:\n{user_msg}\n\n### Response:\n{assistant_msg}"
+        else:
+            text = f"### Instruction:\n{sample['input']}\n\n### Response:\n{sample['output']}"
 
     return {"text": text}
 

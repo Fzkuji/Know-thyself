@@ -4,18 +4,21 @@ Label generator - create training labels for metacognition.
 
 from typing import List, Dict, Optional
 
+# System prompt for metacognition assessment
+SYSTEM_PROMPT = "You are assessing whether you can answer a question correctly. Reply with ONLY one of: 'I can answer this question' or 'I cannot answer this question'. Do not provide the actual answer."
+
 # Label templates
 LABEL_TEMPLATES = {
     "can": "I can answer this question.",
-    "uncertain": "I am uncertain about this question.",
-    "cannot": "I cannot answer this question correctly.",
+    "uncertain": "I cannot answer this question.",  # Map uncertain to cannot for simplicity
+    "cannot": "I cannot answer this question.",
 }
 
 # Extended templates with simple reasoning (no external model analysis)
 LABEL_TEMPLATES_WITH_REASON = {
     "can": "I can answer this question. I have sufficient knowledge to provide the correct answer.",
-    "uncertain": "I am uncertain about this question. I might know the answer but I'm not fully confident.",
-    "cannot": "I cannot answer this question correctly. I lack the necessary knowledge.",
+    "uncertain": "I cannot answer this question. I might know the answer but I'm not fully confident.",
+    "cannot": "I cannot answer this question. I lack the necessary knowledge.",
 }
 
 
@@ -31,7 +34,7 @@ def generate_label(ability: str, include_reason: bool = False) -> str:
         Label text
     """
     templates = LABEL_TEMPLATES_WITH_REASON if include_reason else LABEL_TEMPLATES
-    return templates.get(ability, LABEL_TEMPLATES["uncertain"])
+    return templates.get(ability, LABEL_TEMPLATES["cannot"])
 
 
 def build_training_sample(question: str, ability: str, include_reason: bool = False) -> Dict:
@@ -44,13 +47,17 @@ def build_training_sample(question: str, ability: str, include_reason: bool = Fa
         include_reason: Whether to include reasoning in label
 
     Returns:
-        Training sample with input and output
+        Training sample with input and output (using chat format)
     """
     label = generate_label(ability, include_reason)
 
+    # Use chat format for training
     return {
-        "input": f"Before answering, assess your ability to answer this question:\n{question}",
-        "output": label,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"},
+            {"role": "assistant", "content": label}
+        ],
         "ability": ability,
     }
 

@@ -35,7 +35,12 @@ class BaselineEvaluator:
 
     def predict_ability(self, question: str, debug: bool = False) -> str:
         """Ask model to assess its ability to answer."""
-        prompt = f"Before answering, assess your ability to answer this question:\n{question}"
+        # Use chat template for instruction-tuned models
+        messages = [
+            {"role": "system", "content": "You are assessing whether you can answer a question correctly. Reply with ONLY one of: 'I can answer this question' or 'I cannot answer this question'. Do not provide the actual answer."},
+            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"}
+        ]
+        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
