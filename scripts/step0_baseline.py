@@ -37,7 +37,7 @@ class BaselineEvaluator:
         """Ask model to assess its ability to answer."""
         # Use chat template for instruction-tuned models
         messages = [
-            {"role": "system", "content": "You are assessing whether you can answer a question correctly. Reply with ONLY one of: 'I can answer this question' or 'I cannot answer this question'. Do not provide the actual answer."},
+            {"role": "system", "content": "Assess whether you can answer the question correctly. Output your judgment in \\boxed{}, using ONLY one word: yes, uncertain, or no."},
             {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"}
         ]
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -60,7 +60,20 @@ class BaselineEvaluator:
         if debug:
             print(f"[DEBUG] Response: {response[:100]}...")
 
-        if "i can answer" in response or "can answer" in response:
+        # Parse \boxed{} format
+        import re
+        match = re.search(r'\\boxed\{(\w+)\}', response)
+        if match:
+            answer = match.group(1).lower()
+            if answer == "yes":
+                return "can"
+            elif answer == "uncertain":
+                return "uncertain"
+            else:
+                return "cannot"
+
+        # Fallback: check keywords
+        if "yes" in response:
             return "can"
         elif "uncertain" in response:
             return "uncertain"

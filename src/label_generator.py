@@ -5,20 +5,20 @@ Label generator - create training labels for metacognition.
 from typing import List, Dict, Optional
 
 # System prompt for metacognition assessment
-SYSTEM_PROMPT = "You are assessing whether you can answer a question correctly. Reply with ONLY one of: 'I can answer this question' or 'I cannot answer this question'. Do not provide the actual answer."
+SYSTEM_PROMPT = "Assess whether you can answer the question correctly. Output your judgment in \\boxed{}, using ONLY one word: yes, uncertain, or no."
 
-# Label templates
+# Label templates (using \boxed{} format)
 LABEL_TEMPLATES = {
-    "can": "I can answer this question.",
-    "uncertain": "I cannot answer this question.",  # Map uncertain to cannot for simplicity
-    "cannot": "I cannot answer this question.",
+    "can": "\\boxed{yes}",
+    "uncertain": "\\boxed{uncertain}",
+    "cannot": "\\boxed{no}",
 }
 
-# Extended templates with simple reasoning (no external model analysis)
+# Extended templates with simple reasoning
 LABEL_TEMPLATES_WITH_REASON = {
-    "can": "I can answer this question. I have sufficient knowledge to provide the correct answer.",
-    "uncertain": "I cannot answer this question. I might know the answer but I'm not fully confident.",
-    "cannot": "I cannot answer this question. I lack the necessary knowledge.",
+    "can": "I have sufficient knowledge about this topic. \\boxed{yes}",
+    "uncertain": "I'm not fully confident about this. \\boxed{uncertain}",
+    "cannot": "I lack the necessary knowledge. \\boxed{no}",
 }
 
 
