@@ -23,6 +23,7 @@ from src.adapter_utils import merge_adapter_into_base
 from src.inference import ModelInference
 from src.evaluator import is_correct
 from src.pipeline import MultiPhasePipeline
+from src.data_loader import load_triviaqa
 
 
 def test_knowledge_acquisition(
@@ -172,12 +173,12 @@ def main():
         )
         print(f"Merged model saved to {merged_path}")
 
-    # Step 2.4: Test knowledge acquisition
+    # Step 2.4: Test knowledge acquisition (using validation split as held-out test set)
     test_model_path = str(merged_path) if merged_path else args.model
-    test_samples = samples[:args.test_samples]
-
     print(f"\n--- Testing knowledge acquisition ---")
-    print(f"Testing on {len(test_samples)} samples (original data)")
+    print(f"Loading validation split for testing...")
+    test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+    print(f"Testing on {len(test_samples)} samples (validation split - held-out)")
 
     # Test before (base model)
     print("\nBefore training (base model):")

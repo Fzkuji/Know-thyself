@@ -299,12 +299,31 @@ def main():
 
     print(f"Judgment adapter saved to {adapter_path}")
 
-    # Step 3.4: Final evaluation
+    # Step 3.4: Final evaluation (using validation split as held-out test set)
     print("\n" + "=" * 60)
-    print("Final Evaluation")
+    print("Final Evaluation (on validation split)")
     print("=" * 60)
 
-    test_samples = new_samples[:args.test_samples]
+    # Load validation split for testing
+    print(f"\nLoading validation split for testing...")
+    val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+    print(f"Loaded {len(val_samples)} test samples from validation split")
+
+    # Collect responses with knowledge model to determine actual ability
+    print(f"\nCollecting responses with knowledge model to determine actual ability...")
+    test_samples = collect_responses_with_model(
+        model_path=args.base_model,
+        samples=val_samples,
+        num_trials=args.num_trials,
+        inference_batch_size=args.inference_batch_size
+    )
+
+    # Show test ability distribution
+    test_dist = {}
+    for s in test_samples:
+        ability = s.get("ability", "unknown")
+        test_dist[ability] = test_dist.get(ability, 0) + 1
+    print(f"Test ability distribution: {test_dist}")
 
     # Evaluate before training judgment v2
     print("\nBefore judgment v2 training (knowledge model only):")
