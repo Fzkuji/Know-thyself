@@ -105,16 +105,8 @@ def train_metacognition(
     train_tokenized = tokenize_dataset(train_dataset, tokenizer, max_length)
     val_tokenized = tokenize_dataset(val_dataset, tokenizer, max_length) if val_dataset else None
 
-    # Mixed precision settings:
-    # - LoRA: use fp16 (works well with PEFT)
-    # - Full fine-tuning: use bf16 (fp16 causes gradient unscaling errors)
-    if use_lora:
-        fp16 = True
-        bf16 = False
-    else:
-        # Full fine-tuning: prefer bf16 if available, otherwise disable mixed precision
-        fp16 = False
-        bf16 = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
+    # Use bf16 for mixed precision (works for both LoRA and full fine-tuning)
+    bf16 = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -126,7 +118,6 @@ def train_metacognition(
         logging_steps=10,
         save_strategy="epoch",
         eval_strategy="epoch" if val_tokenized else "no",
-        fp16=fp16,
         bf16=bf16,
         report_to="none",
     )
