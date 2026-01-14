@@ -88,8 +88,11 @@ def main():
     parser.add_argument("--epochs", type=int, default=5,
                         help="More epochs for knowledge learning")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr", type=float, default=1e-4,
+                        help="1e-4 for LoRA, 1e-5 for full fine-tuning")
     parser.add_argument("--inference_batch_size", type=int, default=16)
+    parser.add_argument("--no_lora", action="store_true",
+                        help="Disable LoRA for full fine-tuning")
     parser.add_argument("--no_merge", action="store_true",
                         help="Don't merge adapter into base model")
     parser.add_argument("--test_samples", type=int, default=100,
@@ -138,7 +141,8 @@ def main():
 
     # Step 2.2: Setup model and train
     print(f"\nSetting up model: {args.model}")
-    model, tokenizer = setup_model_for_training(args.model, use_lora=True)
+    print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+    model, tokenizer = setup_model_for_training(args.model, use_lora=not args.no_lora)
 
     print("Preparing dataset...")
     datasets = prepare_dataset_for_training(qa_data, tokenizer)
@@ -161,9 +165,13 @@ def main():
 
     print(f"\nKnowledge adapter saved to {adapter_path}")
 
-    # Step 2.3: Merge adapter into base model
+    # Step 2.3: Merge adapter into base model (or use full fine-tuned model directly)
     merged_path = None
-    if not args.no_merge:
+    if args.no_lora:
+        # Full fine-tuning: the trained model is already complete, use it directly
+        merged_path = adapter_path  # adapter_path contains the full model
+        print(f"\nFull fine-tuning: Model saved directly to {merged_path}")
+    elif not args.no_merge:
         merged_path = output_dir / "base_with_knowledge"
         print(f"\nMerging adapter into base model...")
         merge_adapter_into_base(

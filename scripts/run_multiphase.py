@@ -56,6 +56,8 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "knowledge_epochs": args.knowledge_epochs,
         "batch_size": args.batch_size,
         "inference_batch_size": args.inference_batch_size,
+        "learning_rate": args.lr,
+        "no_lora": args.no_lora,
     }
 
     log_path = output_dir / "config.json"
@@ -135,17 +137,28 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--output_dir", str(phase_output / "lora_judgment_v1"),
         "--epochs", str(args.epochs),
         "--batch_size", str(args.batch_size),
+        "--lr", str(args.lr),
     ]
+    if args.no_lora:
+        cmd.append("--no_lora")
     subprocess.run(cmd, check=True)
 
     # Step 5: Evaluate AFTER training on both splits
     print("\n[Step 1.5] Evaluating AFTER training...")
 
+    # For full fine-tuning, use trained model directly; for LoRA, use base + adapter
+    if args.no_lora:
+        eval_model = str(phase_output / "lora_judgment_v1")  # Full model saved here
+        eval_lora = "none"
+    else:
+        eval_model = args.model
+        eval_lora = str(phase_output / "lora_judgment_v1")
+
     print("\n[Step 1.5a] After training on TRAIN split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", args.model,
-        "--lora_path", str(phase_output / "lora_judgment_v1"),
+        "--model", eval_model,
+        "--lora_path", eval_lora,
         "--num_samples", str(args.test_samples),
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
@@ -157,8 +170,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     print("\n[Step 1.5b] After training on VALIDATION split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", args.model,
-        "--lora_path", str(phase_output / "lora_judgment_v1"),
+        "--model", eval_model,
+        "--lora_path", eval_lora,
         "--num_samples", str(args.test_samples),
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
@@ -208,7 +221,10 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         "--batch_size", str(args.batch_size),
         "--inference_batch_size", str(args.inference_batch_size),
         "--test_samples", str(args.test_samples),
+        "--lr", str(args.lr),
     ]
+    if args.no_lora:
+        cmd.append("--no_lora")
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 2
@@ -252,7 +268,10 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         "--batch_size", str(args.batch_size),
         "--inference_batch_size", str(args.inference_batch_size),
         "--test_samples", str(args.test_samples),
+        "--lr", str(args.lr),
     ]
+    if args.no_lora:
+        cmd.append("--no_lora")
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 3
@@ -295,6 +314,10 @@ def main():
     parser.add_argument("--knowledge_epochs", type=int, default=5,
                         help="Epochs for knowledge training (Phase 2)")
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-4,
+                        help="Learning rate (1e-4 for LoRA, 1e-5 for full fine-tuning)")
+    parser.add_argument("--no_lora", action="store_true",
+                        help="Disable LoRA for full fine-tuning")
 
     args = parser.parse_args()
 

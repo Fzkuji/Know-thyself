@@ -86,8 +86,11 @@ pip install -r requirements.txt
 ### Quick Start (Recommended)
 
 ```bash
-# Run full 3-phase pipeline (LoRA fine-tuning)
+# Run full 3-phase pipeline (LoRA fine-tuning, lr=1e-4)
 bash run_multiphase_pipeline.sh Qwen/Qwen2.5-0.5B-Instruct 10000 1000 triviaqa 512 32
+
+# Run full 3-phase pipeline (Full fine-tuning, lr=1e-5)
+bash run_multiphase_pipeline.sh Qwen/Qwen2.5-0.5B-Instruct 10000 1000 triviaqa 512 32 true
 ```
 
 Parameters:
@@ -97,11 +100,12 @@ Parameters:
 4. `dataset` - Dataset name for experiment naming (default: triviaqa)
 5. `inference_batch_size` - Batch size for inference (default: 16)
 6. `train_batch_size` - Batch size for training (default: 32)
+7. `no_lora` - Set to "true" for full fine-tuning (default: false)
 
 ### Python API
 
 ```bash
-# Run all phases (LoRA)
+# Run all phases (LoRA, lr=1e-4)
 python scripts/run_multiphase.py \
     --model Qwen/Qwen2.5-0.5B-Instruct \
     --num_samples 10000 \
@@ -109,27 +113,21 @@ python scripts/run_multiphase.py \
     --inference_batch_size 512 \
     --batch_size 32
 
+# Run all phases (Full fine-tuning, lr=1e-5)
+python scripts/run_multiphase.py \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --num_samples 10000 \
+    --test_samples 1000 \
+    --inference_batch_size 512 \
+    --batch_size 32 \
+    --no_lora \
+    --lr 1e-5
+
 # Run specific phase
 python scripts/run_multiphase.py --phase 2
 
 # Resume from checkpoint
 python scripts/run_multiphase.py --experiment <name> --resume
-```
-
-### Full Fine-tuning (No LoRA)
-
-For full fine-tuning instead of LoRA, use `step3_train.py` directly with `--no_lora` and lower learning rate:
-
-```bash
-# Full fine-tuning (lr=1e-5, no LoRA)
-python scripts/step3_train.py \
-    --model Qwen/Qwen2.5-0.5B-Instruct \
-    --input data/step2_training_data.jsonl \
-    --output_dir outputs/full_finetune \
-    --no_lora \
-    --lr 1e-5 \
-    --epochs 1 \
-    --batch_size 4
 ```
 
 ### Hyperparameters

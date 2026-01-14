@@ -204,9 +204,12 @@ def main():
     # Training params
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_trials", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr", type=float, default=1e-4,
+                        help="1e-4 for LoRA, 1e-5 for full fine-tuning")
+    parser.add_argument("--no_lora", action="store_true",
+                        help="Disable LoRA for full fine-tuning")
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Evaluation
@@ -278,7 +281,8 @@ def main():
     # Step 3.3: Train updated judgment
     print(f"\nSetting up model for judgment training...")
     print(f"Base: {args.base_model}")
-    model, tokenizer = setup_model_for_training(args.base_model, use_lora=True)
+    print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+    model, tokenizer = setup_model_for_training(args.base_model, use_lora=not args.no_lora)
 
     print("Preparing dataset...")
     datasets = prepare_dataset_for_training(training_data, tokenizer)
@@ -322,12 +326,22 @@ def main():
     print(f"Exact Match: {before_train_eval['exact_match_rate']*100:.1f}%")
 
     print("\nAfter judgment v2 training on TRAIN:")
-    after_train_eval = evaluate_judgment(
-        model_path=args.base_model,
-        samples=train_test_samples,
-        adapter_path=str(adapter_path),
-        inference_batch_size=args.inference_batch_size
-    )
+    if args.no_lora:
+        # Full fine-tuning: model is saved directly in adapter_path
+        after_train_eval = evaluate_judgment(
+            model_path=str(adapter_path),
+            samples=train_test_samples,
+            adapter_path=None,
+            inference_batch_size=args.inference_batch_size
+        )
+    else:
+        # LoRA: use base model + adapter
+        after_train_eval = evaluate_judgment(
+            model_path=args.base_model,
+            samples=train_test_samples,
+            adapter_path=str(adapter_path),
+            inference_batch_size=args.inference_batch_size
+        )
     print(f"Exact Match: {after_train_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_train_eval['predicted_distribution']}")
     print(f"Actual: {after_train_eval['actual_distribution']}")
@@ -363,12 +377,22 @@ def main():
     print(f"Exact Match: {before_val_eval['exact_match_rate']*100:.1f}%")
 
     print("\nAfter judgment v2 training on VALIDATION:")
-    after_val_eval = evaluate_judgment(
-        model_path=args.base_model,
-        samples=val_test_samples,
-        adapter_path=str(adapter_path),
-        inference_batch_size=args.inference_batch_size
-    )
+    if args.no_lora:
+        # Full fine-tuning: model is saved directly in adapter_path
+        after_val_eval = evaluate_judgment(
+            model_path=str(adapter_path),
+            samples=val_test_samples,
+            adapter_path=None,
+            inference_batch_size=args.inference_batch_size
+        )
+    else:
+        # LoRA: use base model + adapter
+        after_val_eval = evaluate_judgment(
+            model_path=args.base_model,
+            samples=val_test_samples,
+            adapter_path=str(adapter_path),
+            inference_batch_size=args.inference_batch_size
+        )
     print(f"Exact Match: {after_val_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_val_eval['predicted_distribution']}")
     print(f"Actual: {after_val_eval['actual_distribution']}")
