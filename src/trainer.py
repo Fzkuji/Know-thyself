@@ -120,6 +120,8 @@ def train_metacognition(
         eval_strategy="epoch" if val_tokenized else "no",
         bf16=bf16,
         report_to="none",
+        max_grad_norm=1.0,  # Gradient clipping to prevent explosion
+        weight_decay=0.01,  # Regularization for full fine-tuning
     )
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
