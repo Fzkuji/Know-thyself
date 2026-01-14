@@ -23,6 +23,7 @@ from src.dataset_builder import load_from_jsonl, save_to_jsonl, prepare_dataset_
 from src.label_generator import build_training_dataset, SYSTEM_PROMPT
 from src.trainer import setup_model_for_training, train_metacognition
 from src.pipeline import MultiPhasePipeline
+from tqdm import tqdm
 import re
 
 
@@ -124,7 +125,7 @@ def evaluate_judgment(
     results = []
     abilities = ["can", "uncertain", "cannot"]
 
-    for sample in samples:
+    for sample in tqdm(samples, desc="Evaluating judgment"):
         question = sample["question"]
         actual_ability = sample["ability"]
 

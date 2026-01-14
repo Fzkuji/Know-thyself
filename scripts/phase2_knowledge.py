@@ -24,6 +24,7 @@ from src.inference import ModelInference
 from src.evaluator import is_correct
 from src.pipeline import MultiPhasePipeline
 from src.data_loader import load_triviaqa
+from tqdm import tqdm
 
 
 def test_knowledge_acquisition(
@@ -48,7 +49,7 @@ def test_knowledge_acquisition(
     correct_count = 0
     total = 0
 
-    for sample in samples:
+    for sample in tqdm(samples, desc="Testing knowledge"):
         question = sample["question"]
         gold_answers = sample.get("normalized_answers", sample.get("answers", []))
 
