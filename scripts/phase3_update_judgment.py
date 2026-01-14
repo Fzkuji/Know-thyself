@@ -69,28 +69,21 @@ def collect_responses_with_model(
         temperature=1.0,
     )
 
-    results = []
-
-    # Format prompt for answer generation
-    def format_prompt(sample):
-        return f"Question: {sample['question']}\nAnswer:"
-
     # Batch inference
-    all_responses = inference.batch_inference_parallel(
+    samples_with_responses = inference.batch_inference(
         samples=samples,
         num_trials=num_trials,
-        prompt_formatter=format_prompt
+        prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
     )
 
-    for sample, responses in zip(samples, all_responses):
+    # Evaluate responses
+    results = []
+    for sample in samples_with_responses:
         gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-
-        # Evaluate responses
-        evaluation = evaluate_responses(responses, gold_answers)
+        evaluation = evaluate_responses(sample["responses"], gold_answers)
         ability = classify_ability(evaluation["accuracy"])
 
         result = sample.copy()
-        result["responses"] = responses
         result["evaluation"] = evaluation
         result["ability"] = ability
         results.append(result)
