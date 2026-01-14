@@ -299,65 +299,90 @@ def main():
 
     print(f"Judgment adapter saved to {adapter_path}")
 
-    # Step 3.4: Final evaluation (using validation split as held-out test set)
+    # Step 3.4: Final evaluation on both train and validation splits
     print("\n" + "=" * 60)
-    print("Final Evaluation (on validation split)")
+    print("Final Evaluation")
     print("=" * 60)
 
-    # Load validation split for testing
-    print(f"\nLoading validation split for testing...")
+    # ===== Evaluate on TRAIN split =====
+    print("\n--- Evaluation on TRAIN split (verify learning) ---")
+    train_test_samples = new_samples[:args.test_samples]
+    train_dist = {}
+    for s in train_test_samples:
+        ability = s.get("ability", "unknown")
+        train_dist[ability] = train_dist.get(ability, 0) + 1
+    print(f"Train test ability distribution: {train_dist}")
+
+    print("\nBefore judgment v2 training (knowledge model only) on TRAIN:")
+    before_train_eval = evaluate_judgment(
+        model_path=args.base_model,
+        samples=train_test_samples,
+        inference_batch_size=args.inference_batch_size
+    )
+    print(f"Exact Match: {before_train_eval['exact_match_rate']*100:.1f}%")
+
+    print("\nAfter judgment v2 training on TRAIN:")
+    after_train_eval = evaluate_judgment(
+        model_path=args.base_model,
+        samples=train_test_samples,
+        adapter_path=str(adapter_path),
+        inference_batch_size=args.inference_batch_size
+    )
+    print(f"Exact Match: {after_train_eval['exact_match_rate']*100:.1f}%")
+    print(f"Predicted: {after_train_eval['predicted_distribution']}")
+    print(f"Actual: {after_train_eval['actual_distribution']}")
+
+    train_improvement = after_train_eval['exact_match_rate'] - before_train_eval['exact_match_rate']
+    print(f"Train Improvement: {train_improvement*100:+.1f}%")
+
+    # ===== Evaluate on VALIDATION split =====
+    print("\n--- Evaluation on VALIDATION split (test generalization) ---")
     val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
     print(f"Loaded {len(val_samples)} test samples from validation split")
 
-    # Collect responses with knowledge model to determine actual ability
     print(f"\nCollecting responses with knowledge model to determine actual ability...")
-    test_samples = collect_responses_with_model(
+    val_test_samples = collect_responses_with_model(
         model_path=args.base_model,
         samples=val_samples,
         num_trials=args.num_trials,
         inference_batch_size=args.inference_batch_size
     )
 
-    # Show test ability distribution
-    test_dist = {}
-    for s in test_samples:
+    val_dist = {}
+    for s in val_test_samples:
         ability = s.get("ability", "unknown")
-        test_dist[ability] = test_dist.get(ability, 0) + 1
-    print(f"Test ability distribution: {test_dist}")
+        val_dist[ability] = val_dist.get(ability, 0) + 1
+    print(f"Validation test ability distribution: {val_dist}")
 
-    # Evaluate before training judgment v2
-    print("\nBefore judgment v2 training (knowledge model only):")
-    before_eval = evaluate_judgment(
+    print("\nBefore judgment v2 training (knowledge model only) on VALIDATION:")
+    before_val_eval = evaluate_judgment(
         model_path=args.base_model,
-        samples=test_samples,
+        samples=val_test_samples,
         inference_batch_size=args.inference_batch_size
     )
-    print(f"Exact Match: {before_eval['exact_match_rate']*100:.1f}%")
-    print(f"Predicted: {before_eval['predicted_distribution']}")
-    print(f"Actual: {before_eval['actual_distribution']}")
+    print(f"Exact Match: {before_val_eval['exact_match_rate']*100:.1f}%")
 
-    # Evaluate after training judgment v2
-    print("\nAfter judgment v2 training:")
-    after_eval = evaluate_judgment(
+    print("\nAfter judgment v2 training on VALIDATION:")
+    after_val_eval = evaluate_judgment(
         model_path=args.base_model,
-        samples=test_samples,
+        samples=val_test_samples,
         adapter_path=str(adapter_path),
         inference_batch_size=args.inference_batch_size
     )
-    print(f"Exact Match: {after_eval['exact_match_rate']*100:.1f}%")
-    print(f"Predicted: {after_eval['predicted_distribution']}")
-    print(f"Actual: {after_eval['actual_distribution']}")
+    print(f"Exact Match: {after_val_eval['exact_match_rate']*100:.1f}%")
+    print(f"Predicted: {after_val_eval['predicted_distribution']}")
+    print(f"Actual: {after_val_eval['actual_distribution']}")
 
-    # Print confusion matrix
-    print(f"\nConfusion Matrix (Phase 3):")
-    c = after_eval['confusion']
+    val_improvement = after_val_eval['exact_match_rate'] - before_val_eval['exact_match_rate']
+    print(f"Validation Improvement: {val_improvement*100:+.1f}%")
+
+    # Print confusion matrix for validation
+    print(f"\nConfusion Matrix (Validation):")
+    c = after_val_eval['confusion']
     print(f"                      actual_can  actual_uncertain  actual_cannot")
     print(f"  predicted_can          {c['can_can']:5d}           {c['can_uncertain']:5d}            {c['can_cannot']:5d}")
     print(f"  predicted_uncertain    {c['uncertain_can']:5d}           {c['uncertain_uncertain']:5d}            {c['uncertain_cannot']:5d}")
     print(f"  predicted_cannot       {c['cannot_can']:5d}           {c['cannot_uncertain']:5d}            {c['cannot_cannot']:5d}")
-
-    improvement = after_eval['exact_match_rate'] - before_eval['exact_match_rate']
-    print(f"\nImprovement: {improvement*100:+.1f}%")
 
     # Record to pipeline
     if pipeline:
@@ -367,10 +392,13 @@ def main():
             metrics={
                 "original_distribution": original_dist,
                 "new_distribution": new_dist,
-                "before_exact_match": before_eval['exact_match_rate'],
-                "after_exact_match": after_eval['exact_match_rate'],
-                "improvement": improvement,
-                "confusion_matrix": after_eval['confusion'],
+                "train_before_exact_match": before_train_eval['exact_match_rate'],
+                "train_after_exact_match": after_train_eval['exact_match_rate'],
+                "train_improvement": train_improvement,
+                "val_before_exact_match": before_val_eval['exact_match_rate'],
+                "val_after_exact_match": after_val_eval['exact_match_rate'],
+                "val_improvement": val_improvement,
+                "confusion_matrix": after_val_eval['confusion'],
             },
             output_paths={
                 "responses": str(responses_path),

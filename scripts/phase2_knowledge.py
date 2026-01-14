@@ -173,31 +173,52 @@ def main():
         )
         print(f"Merged model saved to {merged_path}")
 
-    # Step 2.4: Test knowledge acquisition (using validation split as held-out test set)
+    # Step 2.4: Test knowledge acquisition on both train and validation splits
     test_model_path = str(merged_path) if merged_path else args.model
-    print(f"\n--- Testing knowledge acquisition ---")
-    print(f"Loading validation split for testing...")
-    test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-    print(f"Testing on {len(test_samples)} samples (validation split - held-out)")
 
-    # Test before (base model)
-    print("\nBefore training (base model):")
-    before_results = test_knowledge_acquisition(
-        args.model, test_samples,
+    # Test on TRAIN split (verify model learned training data)
+    print(f"\n--- Testing knowledge acquisition on TRAIN split ---")
+    train_test_samples = samples[:args.test_samples]  # Use subset of training data
+    print(f"Testing on {len(train_test_samples)} samples (train split)")
+
+    print("\nBefore training (base model) on TRAIN:")
+    before_train = test_knowledge_acquisition(
+        args.model, train_test_samples,
         inference_batch_size=args.inference_batch_size
     )
-    print(f"Accuracy: {before_results['accuracy']*100:.1f}% ({before_results['correct']}/{before_results['total']})")
+    print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
 
-    # Test after (knowledge model)
-    print("\nAfter training (with knowledge):")
-    after_results = test_knowledge_acquisition(
-        test_model_path, test_samples,
+    print("\nAfter training (with knowledge) on TRAIN:")
+    after_train = test_knowledge_acquisition(
+        test_model_path, train_test_samples,
         inference_batch_size=args.inference_batch_size
     )
-    print(f"Accuracy: {after_results['accuracy']*100:.1f}% ({after_results['correct']}/{after_results['total']})")
+    print(f"Accuracy: {after_train['accuracy']*100:.1f}% ({after_train['correct']}/{after_train['total']})")
 
-    improvement = after_results['accuracy'] - before_results['accuracy']
-    print(f"\nImprovement: {improvement*100:+.1f}%")
+    train_improvement = after_train['accuracy'] - before_train['accuracy']
+    print(f"Train Improvement: {train_improvement*100:+.1f}%")
+
+    # Test on VALIDATION split (test generalization)
+    print(f"\n--- Testing knowledge acquisition on VALIDATION split ---")
+    val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+    print(f"Testing on {len(val_test_samples)} samples (validation split - held-out)")
+
+    print("\nBefore training (base model) on VALIDATION:")
+    before_val = test_knowledge_acquisition(
+        args.model, val_test_samples,
+        inference_batch_size=args.inference_batch_size
+    )
+    print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
+
+    print("\nAfter training (with knowledge) on VALIDATION:")
+    after_val = test_knowledge_acquisition(
+        test_model_path, val_test_samples,
+        inference_batch_size=args.inference_batch_size
+    )
+    print(f"Accuracy: {after_val['accuracy']*100:.1f}% ({after_val['correct']}/{after_val['total']})")
+
+    val_improvement = after_val['accuracy'] - before_val['accuracy']
+    print(f"Validation Improvement: {val_improvement*100:+.1f}%")
 
     # Record to pipeline if available
     if pipeline:
@@ -206,9 +227,12 @@ def main():
             status="completed",
             metrics={
                 "qa_samples": len(qa_data),
-                "before_accuracy": before_results['accuracy'],
-                "after_accuracy": after_results['accuracy'],
-                "improvement": improvement,
+                "train_before_accuracy": before_train['accuracy'],
+                "train_after_accuracy": after_train['accuracy'],
+                "train_improvement": train_improvement,
+                "val_before_accuracy": before_val['accuracy'],
+                "val_after_accuracy": after_val['accuracy'],
+                "val_improvement": val_improvement,
             },
             output_paths={
                 "qa_data": str(qa_data_path),
