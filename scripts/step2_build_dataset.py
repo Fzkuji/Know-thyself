@@ -30,8 +30,11 @@ def main():
     print("\n--- Example training samples ---")
     for i, sample in enumerate(training_data[:3]):
         print(f"\n[{i+1}] Ability: {sample['ability']}")
-        print(f"Input: {sample['input'][:100]}...")
-        print(f"Output: {sample['output']}")
+        # Chat format: messages = [system, user, assistant]
+        user_msg = sample['messages'][1]['content']
+        assistant_msg = sample['messages'][2]['content']
+        print(f"User: {user_msg[:80]}...")
+        print(f"Assistant: {assistant_msg}")
 
     print(f"\nSaving to {args.output}")
     save_to_jsonl(training_data, args.output)
