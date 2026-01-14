@@ -7,11 +7,10 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
-    Trainer,
-    DataCollatorForLanguageModeling,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from typing import Dict, Optional
+from trl import SFTTrainer, SFTConfig
+from peft import LoraConfig, get_peft_model
+from typing import Optional
 from datasets import Dataset
 
 
@@ -41,7 +40,7 @@ def setup_model_for_training(
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,  # Use bfloat16 for stability
         device_map="auto",
         trust_remote_code=True,
     )
@@ -60,20 +59,6 @@ def setup_model_for_training(
     return model, tokenizer
 
 
-def tokenize_dataset(dataset: Dataset, tokenizer, max_length: int = 512) -> Dataset:
-    """Tokenize dataset for training."""
-
-    def tokenize_fn(examples):
-        return tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=max_length,
-            padding="max_length",
-        )
-
-    return dataset.map(tokenize_fn, batched=True, remove_columns=dataset.column_names)
-
-
 def train_metacognition(
     model,
     tokenizer,
@@ -84,31 +69,31 @@ def train_metacognition(
     batch_size: int = 4,
     learning_rate: float = 1e-4,  # 1e-4 for LoRA, 1e-5 for full fine-tuning
     max_length: int = 512,
-    use_lora: bool = True,  # Whether using LoRA (affects mixed precision settings)
+    use_lora: bool = True,
 ):
     """
-    Train model for metacognition task.
+    Train model for metacognition task using SFTTrainer.
+
+    SFTTrainer properly handles instruction tuning by only computing loss
+    on the assistant's response, not the prompt.
 
     Args:
         model: Model to train
         tokenizer: Tokenizer
-        train_dataset: Training dataset
+        train_dataset: Training dataset with 'text' field (formatted conversations)
         val_dataset: Validation dataset
         output_dir: Output directory
         num_epochs: Number of training epochs
         batch_size: Batch size
         learning_rate: Learning rate
         max_length: Max sequence length
-        use_lora: Whether using LoRA (fp16 for LoRA, bf16 for full fine-tuning)
+        use_lora: Whether using LoRA
     """
-    # Tokenize
-    train_tokenized = tokenize_dataset(train_dataset, tokenizer, max_length)
-    val_tokenized = tokenize_dataset(val_dataset, tokenizer, max_length) if val_dataset else None
-
     # Use bf16 for mixed precision (works for both LoRA and full fine-tuning)
     bf16 = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
 
-    training_args = TrainingArguments(
+    # SFTConfig extends TrainingArguments with SFT-specific options
+    sft_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=num_epochs,
         per_device_train_batch_size=batch_size,
@@ -116,22 +101,23 @@ def train_metacognition(
         learning_rate=learning_rate,
         warmup_ratio=0.1,
         logging_steps=10,
-        save_strategy="no",  # Don't save checkpoints during training, only save at end
-        eval_strategy="epoch" if val_tokenized else "no",
+        save_strategy="no",  # Don't save checkpoints during training
+        eval_strategy="epoch" if val_dataset else "no",
         bf16=bf16,
         report_to="none",
-        max_grad_norm=1.0,  # Gradient clipping to prevent explosion
-        weight_decay=0.01,  # Regularization for full fine-tuning
+        max_grad_norm=1.0,  # Gradient clipping
+        weight_decay=0.01,  # Regularization
+        max_seq_length=max_length,
+        dataset_text_field="text",  # Field containing the formatted text
+        packing=False,  # Don't pack multiple samples
     )
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    trainer = Trainer(
+    trainer = SFTTrainer(
         model=model,
-        args=training_args,
-        train_dataset=train_tokenized,
-        eval_dataset=val_tokenized,
-        data_collator=data_collator,
+        args=sft_config,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        processing_class=tokenizer,
     )
 
     trainer.train()
