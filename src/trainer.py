@@ -26,7 +26,7 @@ def setup_model_for_training(
     Setup model and tokenizer for training.
 
     Args:
-        model_name: HuggingFace model name
+        model_name: HuggingFace model name or local path (e.g., merged model)
         use_lora: Whether to use LoRA
         lora_r: LoRA rank
         lora_alpha: LoRA alpha
@@ -35,7 +35,7 @@ def setup_model_for_training(
     Returns:
         (model, tokenizer)
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -43,6 +43,7 @@ def setup_model_for_training(
         model_name,
         torch_dtype=torch.float16,
         device_map="auto",
+        trust_remote_code=True,
     )
 
     if use_lora:

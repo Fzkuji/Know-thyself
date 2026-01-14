@@ -23,11 +23,12 @@ class ModelInference:
         self.temperature = temperature
         self.inference_batch_size = inference_batch_size
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
             device_map=device,
+            trust_remote_code=True,
         )
 
         if self.tokenizer.pad_token is None:
