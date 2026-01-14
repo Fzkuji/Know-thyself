@@ -80,9 +80,9 @@ def train_metacognition(
     train_dataset: Dataset,
     val_dataset: Optional[Dataset] = None,
     output_dir: str = "./outputs/metacog",
-    num_epochs: int = 3,
+    num_epochs: int = 1,
     batch_size: int = 4,
-    learning_rate: float = 2e-4,
+    learning_rate: float = 1e-4,  # 1e-4 for LoRA, 1e-5 for full fine-tuning
     max_length: int = 512,
 ):
     """

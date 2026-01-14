@@ -290,7 +290,7 @@ def main():
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Training params
-    parser.add_argument("--epochs", type=int, default=3,
+    parser.add_argument("--epochs", type=int, default=1,
                         help="Epochs for judgment training")
     parser.add_argument("--knowledge_epochs", type=int, default=5,
                         help="Epochs for knowledge training (Phase 2)")

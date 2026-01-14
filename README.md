@@ -120,8 +120,8 @@ python scripts/run_multiphase.py --experiment <name> --resume
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `learning_rate` | 2e-4 | Learning rate for LoRA training |
-| `epochs` | 3 | Epochs for judgment training |
+| `learning_rate` | 1e-4 | Learning rate for LoRA training (1e-5 for full fine-tuning) |
+| `epochs` | 1 | Epochs for judgment training |
 | `knowledge_epochs` | 5 | Epochs for knowledge training |
 | `batch_size` | 4/32 | Training batch size |
 | `inference_batch_size` | 16 | Inference batch size |
