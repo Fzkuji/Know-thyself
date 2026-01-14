@@ -27,8 +27,10 @@ def load_triviaqa(split: str = "train", num_samples: Optional[int] = None) -> Li
         sample = {
             "id": item.get("question_id", str(i)),
             "question": item["question"],
-            "answers": item["answer"]["aliases"],  # List of acceptable answers
-            "normalized_answers": item["answer"]["normalized_aliases"],
+            "answers": item["answer"]["aliases"],  # List of acceptable answers (for evaluation)
+            "normalized_answers": item["answer"]["normalized_aliases"],  # For evaluation
+            "primary_answer": item["answer"]["value"],  # Primary answer (for training)
+            "normalized_primary": item["answer"]["normalized_value"],  # Normalized primary
         }
         samples.append(sample)
 

@@ -39,7 +39,7 @@ def build_qa_dataset(samples: List[Dict]) -> List[Dict]:
     Build QA training dataset from samples.
 
     Uses all samples regardless of ability classification.
-    Each sample should have 'question' and either 'normalized_answers' or 'answers'.
+    Each sample should have 'question' and either 'primary_answer' or 'answers'.
 
     Args:
         samples: List of samples with question and answers
@@ -52,10 +52,13 @@ def build_qa_dataset(samples: List[Dict]) -> List[Dict]:
     for sample in samples:
         question = sample["question"]
 
-        # Use first normalized answer as target
-        if "normalized_answers" in sample and sample["normalized_answers"]:
-            answer = sample["normalized_answers"][0]
+        # Use primary answer (not aliases which may contain wrong data)
+        if "primary_answer" in sample and sample["primary_answer"]:
+            answer = sample["primary_answer"]
+        elif "normalized_primary" in sample and sample["normalized_primary"]:
+            answer = sample["normalized_primary"]
         elif "answers" in sample and sample["answers"]:
+            # Fallback to first answer if no primary
             answer = sample["answers"][0]
         else:
             continue  # Skip if no answer available
