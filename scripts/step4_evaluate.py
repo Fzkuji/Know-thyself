@@ -20,7 +20,7 @@ from src.evaluator import is_correct, classify_ability
 
 
 class TrainedModelEvaluator:
-    def __init__(self, base_model: str, lora_path: str, inference_batch_size: int = 16):
+    def __init__(self, base_model: str, lora_path: str = None, inference_batch_size: int = 16):
         self.tokenizer = AutoTokenizer.from_pretrained(base_model)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -31,7 +31,11 @@ class TrainedModelEvaluator:
             torch_dtype=torch.float16,
             device_map="auto",
         )
-        self.model = PeftModel.from_pretrained(base, lora_path)
+        # Support evaluation without LoRA (baseline)
+        if lora_path and lora_path.lower() != "none":
+            self.model = PeftModel.from_pretrained(base, lora_path)
+        else:
+            self.model = base
         self.model.eval()
         self.inference_batch_size = inference_batch_size
 

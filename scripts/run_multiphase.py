@@ -97,8 +97,37 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     subprocess.run(cmd, check=True)
 
-    # Step 3: Train judgment
-    print("\n[Step 1.3] Training judgment ability...")
+    # Step 3: Evaluate BEFORE training (baseline)
+    print("\n[Step 1.3] Evaluating BASELINE (before training)...")
+
+    print("\n[Step 1.3a] Baseline on TRAIN split...")
+    cmd = [
+        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+        "--model", args.model,
+        "--lora_path", "none",  # No LoRA - baseline
+        "--num_samples", str(args.test_samples),
+        "--num_trials", str(args.num_trials),
+        "--inference_batch_size", str(args.inference_batch_size),
+        "--split", "train",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    print(result.stdout)
+
+    print("\n[Step 1.3b] Baseline on VALIDATION split...")
+    cmd = [
+        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+        "--model", args.model,
+        "--lora_path", "none",  # No LoRA - baseline
+        "--num_samples", str(args.test_samples),
+        "--num_trials", str(args.num_trials),
+        "--inference_batch_size", str(args.inference_batch_size),
+        "--split", "validation",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    print(result.stdout)
+
+    # Step 4: Train judgment
+    print("\n[Step 1.4] Training judgment ability...")
     cmd = [
         sys.executable, str(project_root / "scripts/step3_train.py"),
         "--model", args.model,
@@ -109,8 +138,10 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     subprocess.run(cmd, check=True)
 
-    # Step 4: Evaluate on both train and validation splits
-    print("\n[Step 1.4a] Evaluating judgment accuracy on TRAIN split...")
+    # Step 5: Evaluate AFTER training on both splits
+    print("\n[Step 1.5] Evaluating AFTER training...")
+
+    print("\n[Step 1.5a] After training on TRAIN split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
         "--model", args.model,
@@ -118,12 +149,12 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--num_samples", str(args.test_samples),
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "train",  # Verify model learned training data
+        "--split", "train",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
 
-    print("\n[Step 1.4b] Evaluating judgment accuracy on VALIDATION split...")
+    print("\n[Step 1.5b] After training on VALIDATION split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
         "--model", args.model,
