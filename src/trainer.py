@@ -116,7 +116,7 @@ def train_metacognition(
         learning_rate=learning_rate,
         warmup_ratio=0.1,
         logging_steps=10,
-        save_strategy="epoch",
+        save_strategy="no",  # Don't save checkpoints during training, only save at end
         eval_strategy="epoch" if val_tokenized else "no",
         bf16=bf16,
         report_to="none",

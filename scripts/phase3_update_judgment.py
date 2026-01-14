@@ -288,7 +288,7 @@ def main():
     datasets = prepare_dataset_for_training(training_data, tokenizer)
     print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
 
-    adapter_path = output_dir / "lora_judgment_v2"
+    adapter_path = output_dir / "judgment_v2"
     print(f"\nTraining judgment v2...")
     train_metacognition(
         model=model,
@@ -428,7 +428,7 @@ def main():
             output_paths={
                 "responses": str(responses_path),
                 "training_data": str(training_data_path),
-                "lora_judgment_v2": str(adapter_path),
+                "judgment_v2": str(adapter_path),
             }
         )
         pipeline.print_summary()

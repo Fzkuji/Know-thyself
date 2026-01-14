@@ -148,7 +148,7 @@ def main():
     datasets = prepare_dataset_for_training(qa_data, tokenizer)
     print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
 
-    adapter_path = output_dir / "lora_knowledge"
+    adapter_path = output_dir / "knowledge"
     print(f"\nTraining knowledge adapter...")
     print(f"Output: {adapter_path}")
 
@@ -245,7 +245,7 @@ def main():
             },
             output_paths={
                 "qa_data": str(qa_data_path),
-                "lora_knowledge": str(adapter_path),
+                "knowledge": str(adapter_path),
                 "base_with_knowledge": str(merged_path) if merged_path else "",
             }
         )

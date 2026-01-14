@@ -154,15 +154,15 @@ experiments/Qwen2.5-0.5B_triviaqa_train10000_test1000_0114_1600/
 ├── phase1_judgment/
 │   ├── responses.jsonl
 │   ├── training_data.jsonl
-│   └── lora_judgment_v1/
+│   └── judgment_v1/          # LoRA adapter or full model
 ├── phase2_knowledge/
 │   ├── qa_training_data.jsonl
-│   ├── lora_knowledge/
-│   └── base_with_knowledge/
+│   ├── knowledge/            # LoRA adapter or full model
+│   └── base_with_knowledge/  # Merged model (LoRA only)
 └── phase3_judgment/
     ├── responses_post_knowledge.jsonl
     ├── training_data_v2.jsonl
-    └── lora_judgment_v2/
+    └── judgment_v2/          # LoRA adapter or full model
 ```
 
 ## Evaluation Metrics

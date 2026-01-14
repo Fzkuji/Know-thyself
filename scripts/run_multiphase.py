@@ -134,7 +134,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         sys.executable, str(project_root / "scripts/step3_train.py"),
         "--model", args.model,
         "--input", str(phase_output / "training_data.jsonl"),
-        "--output_dir", str(phase_output / "lora_judgment_v1"),
+        "--output_dir", str(phase_output / "judgment_v1"),
         "--epochs", str(args.epochs),
         "--batch_size", str(args.batch_size),
         "--lr", str(args.lr),
@@ -148,11 +148,11 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
 
     # For full fine-tuning, use trained model directly; for LoRA, use base + adapter
     if args.no_lora:
-        eval_model = str(phase_output / "lora_judgment_v1")  # Full model saved here
+        eval_model = str(phase_output / "judgment_v1")  # Full model saved here
         eval_lora = "none"
     else:
         eval_model = args.model
-        eval_lora = str(phase_output / "lora_judgment_v1")
+        eval_lora = str(phase_output / "judgment_v1")
 
     print("\n[Step 1.5a] After training on TRAIN split...")
     cmd = [
@@ -187,7 +187,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         output_paths={
             "responses": str(phase_output / "responses.jsonl"),
             "training_data": str(phase_output / "training_data.jsonl"),
-            "lora_judgment_v1": str(phase_output / "lora_judgment_v1"),
+            "judgment_v1": str(phase_output / "judgment_v1"),
         }
     )
     pipeline.state.current_phase = 1
