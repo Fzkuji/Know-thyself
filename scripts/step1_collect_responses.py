@@ -37,7 +37,7 @@ def main():
     )
 
     print(f"Running inference ({args.num_trials} trials per question)...")
-    results = model.batch_inference(
+    results = model.batch_inference_parallel(
         samples,
         num_trials=args.num_trials,
         prompt_formatter=format_question_prompt,
