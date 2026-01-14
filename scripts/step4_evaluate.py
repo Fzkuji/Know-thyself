@@ -234,7 +234,7 @@ def main():
     metrics = compute_metrics(results)
 
     print("\n" + "=" * 60)
-    print("EVALUATION RESULTS (After Training)")
+    print("EVALUATION RESULTS")
     print("=" * 60)
     print(f"Total samples: {metrics['total']}")
     print(f"\nExact match (predicted == actual): {metrics['exact_match']} ({metrics['exact_match_rate']*100:.1f}%)")

@@ -59,6 +59,7 @@ def build_training_sample(question: str, ability: str, include_reason: bool = Fa
             {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"},
             {"role": "assistant", "content": label}
         ],
+        "question": question,  # Keep question for adaptive training
         "ability": ability,
     }
 
