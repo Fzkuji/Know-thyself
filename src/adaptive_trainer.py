@@ -172,6 +172,8 @@ class AdaptiveKnowledgeTrainer:
                 "learned": 0,
                 "not_learned": 0,
                 "total_steps": 0,
+                "steps_per_sample": [],  # Record steps for each sample
+                "steps_distribution": {},  # Count samples by steps needed
             }
 
             pbar = tqdm(samples, desc=f"Epoch {epoch+1}/{num_epochs}")
@@ -189,17 +191,35 @@ class AdaptiveKnowledgeTrainer:
                 else:
                     epoch_stats["not_learned"] += 1
                 epoch_stats["total_steps"] += result["steps"]
+                epoch_stats["steps_per_sample"].append(result["steps"])
+
+                # Track distribution
+                steps_key = str(result["steps"]) if result["learned"] else f"{result['steps']}(failed)"
+                epoch_stats["steps_distribution"][steps_key] = epoch_stats["steps_distribution"].get(steps_key, 0) + 1
 
                 # Update progress bar
                 learn_rate = epoch_stats["learned"] / (epoch_stats["learned"] + epoch_stats["not_learned"]) * 100
+                avg_steps = epoch_stats["total_steps"] / len(epoch_stats["steps_per_sample"])
                 pbar.set_postfix({
                     "learned": f"{learn_rate:.1f}%",
-                    "steps": epoch_stats["total_steps"]
+                    "avg_steps": f"{avg_steps:.2f}"
                 })
 
+            # Calculate statistics
+            if epoch_stats["steps_per_sample"]:
+                avg_steps = sum(epoch_stats["steps_per_sample"]) / len(epoch_stats["steps_per_sample"])
+                epoch_stats["avg_steps"] = avg_steps
+
             stats["per_epoch"].append(epoch_stats)
+
+            # Print detailed statistics
             print(f"\nEpoch {epoch+1}: Learned {epoch_stats['learned']}/{total_samples} "
                   f"({epoch_stats['learned']/total_samples*100:.1f}%)")
+            print(f"  Average steps per sample: {epoch_stats.get('avg_steps', 0):.2f}")
+            print(f"  Steps distribution:")
+            for steps, count in sorted(epoch_stats["steps_distribution"].items(), key=lambda x: (x[0].replace('(failed)', '999'))):
+                pct = count / len(epoch_stats["steps_per_sample"]) * 100
+                print(f"    {steps} step(s): {count} samples ({pct:.1f}%)")
 
         return stats
 
@@ -356,6 +376,8 @@ class AdaptiveJudgmentTrainer:
                 "learned": 0,
                 "not_learned": 0,
                 "total_steps": 0,
+                "steps_per_sample": [],  # Record steps for each sample
+                "steps_distribution": {},  # Count samples by steps needed
             }
 
             pbar = tqdm(samples, desc=f"Epoch {epoch+1}/{num_epochs}")
@@ -373,15 +395,33 @@ class AdaptiveJudgmentTrainer:
                 else:
                     epoch_stats["not_learned"] += 1
                 epoch_stats["total_steps"] += result["steps"]
+                epoch_stats["steps_per_sample"].append(result["steps"])
+
+                # Track distribution
+                steps_key = str(result["steps"]) if result["learned"] else f"{result['steps']}(failed)"
+                epoch_stats["steps_distribution"][steps_key] = epoch_stats["steps_distribution"].get(steps_key, 0) + 1
 
                 learn_rate = epoch_stats["learned"] / (epoch_stats["learned"] + epoch_stats["not_learned"]) * 100
+                avg_steps = epoch_stats["total_steps"] / len(epoch_stats["steps_per_sample"])
                 pbar.set_postfix({
                     "learned": f"{learn_rate:.1f}%",
-                    "steps": epoch_stats["total_steps"]
+                    "avg_steps": f"{avg_steps:.2f}"
                 })
 
+            # Calculate statistics
+            if epoch_stats["steps_per_sample"]:
+                avg_steps = sum(epoch_stats["steps_per_sample"]) / len(epoch_stats["steps_per_sample"])
+                epoch_stats["avg_steps"] = avg_steps
+
             stats["per_epoch"].append(epoch_stats)
+
+            # Print detailed statistics
             print(f"\nEpoch {epoch+1}: Learned {epoch_stats['learned']}/{total_samples} "
                   f"({epoch_stats['learned']/total_samples*100:.1f}%)")
+            print(f"  Average steps per sample: {epoch_stats.get('avg_steps', 0):.2f}")
+            print(f"  Steps distribution:")
+            for steps, count in sorted(epoch_stats["steps_distribution"].items(), key=lambda x: (x[0].replace('(failed)', '999'))):
+                pct = count / len(epoch_stats["steps_per_sample"]) * 100
+                print(f"    {steps} step(s): {count} samples ({pct:.1f}%)")
 
         return stats
