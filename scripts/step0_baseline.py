@@ -101,32 +101,39 @@ class BaselineEvaluator:
             prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             prompts.extend([prompt] * num_trials)
 
-        # Batch tokenize all prompts
-        inputs = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        ).to(self.model.device)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=64,
-                temperature=1.0,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-
-        # Decode all responses
+        # Process in batches to avoid OOM
         all_responses = []
-        for i, output in enumerate(outputs):
-            input_len = (inputs["attention_mask"][i] == 1).sum().item()
-            response = self.tokenizer.decode(
-                output[input_len:],
-                skip_special_tokens=True
-            ).strip()
-            all_responses.append(response)
+        batch_size = max(1, self.inference_batch_size)  # Use inference_batch_size for internal batching
+
+        for batch_start in range(0, len(prompts), batch_size):
+            batch_end = min(batch_start + batch_size, len(prompts))
+            batch_prompts = prompts[batch_start:batch_end]
+
+            # Batch tokenize
+            inputs = self.tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            ).to(self.model.device)
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    temperature=1.0,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+
+            # Decode batch responses
+            for i, output in enumerate(outputs):
+                input_len = (inputs["attention_mask"][i] == 1).sum().item()
+                response = self.tokenizer.decode(
+                    output[input_len:],
+                    skip_special_tokens=True
+                ).strip()
+                all_responses.append(response)
 
         # Group responses by question
         results = []
