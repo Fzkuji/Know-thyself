@@ -21,11 +21,63 @@ import argparse
 import sys
 import subprocess
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.pipeline import MultiPhasePipeline, load_experiment
+
+
+def parse_eval_metrics(output: str) -> dict:
+    """Parse evaluation output to extract key metrics."""
+    metrics = {}
+
+    # Extract exact match rate
+    match = re.search(r'Exact match.*?(\d+\.?\d*)%', output)
+    if match:
+        metrics['exact_match_rate'] = float(match.group(1))
+
+    # Extract predicted distribution
+    match = re.search(r'Predicted distribution: can=(\d+), uncertain=(\d+), cannot=(\d+)', output)
+    if match:
+        metrics['pred_can'] = int(match.group(1))
+        metrics['pred_uncertain'] = int(match.group(2))
+        metrics['pred_cannot'] = int(match.group(3))
+
+    # Extract actual distribution
+    match = re.search(r'Actual distribution:\s+can=(\d+), uncertain=(\d+), cannot=(\d+)', output)
+    if match:
+        metrics['actual_can'] = int(match.group(1))
+        metrics['actual_uncertain'] = int(match.group(2))
+        metrics['actual_cannot'] = int(match.group(3))
+
+    return metrics
+
+
+def print_phase_summary(title: str, results: dict):
+    """Print a summary table for phase results."""
+    print("\n" + "=" * 70)
+    print(f"  {title}")
+    print("=" * 70)
+    print(f"{'':20} {'TRAIN':>20} {'VALIDATION':>20}")
+    print("-" * 70)
+
+    # Exact match rates
+    before_train = results.get('before_train', {}).get('exact_match_rate', 0)
+    before_val = results.get('before_val', {}).get('exact_match_rate', 0)
+    after_train = results.get('after_train', {}).get('exact_match_rate', 0)
+    after_val = results.get('after_val', {}).get('exact_match_rate', 0)
+
+    print(f"{'Before training':20} {before_train:>19.1f}% {before_val:>19.1f}%")
+    print(f"{'After training':20} {after_train:>19.1f}% {after_val:>19.1f}%")
+    print("-" * 70)
+
+    # Improvement
+    train_imp = after_train - before_train
+    val_imp = after_val - before_val
+    print(f"{'Improvement':20} {train_imp:>+18.1f}% {val_imp:>+18.1f}%")
+    print("=" * 70)
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
@@ -79,6 +131,9 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     project_root = Path(__file__).resolve().parent.parent
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
 
+    # Store evaluation results for summary
+    eval_results = {}
+
     # Step 1: Collect responses (using train split)
     print("\n[Step 1.1] Collecting responses from train split...")
     cmd = [
@@ -116,6 +171,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
+    eval_results['before_train'] = parse_eval_metrics(result.stdout)
 
     print("\n[Step 1.3b] Baseline on VALIDATION split...")
     cmd = [
@@ -129,6 +185,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
+    eval_results['before_val'] = parse_eval_metrics(result.stdout)
 
     # Step 4: Train judgment
     print("\n[Step 1.4] Training judgment ability...")
@@ -171,6 +228,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
+    eval_results['after_train'] = parse_eval_metrics(result.stdout)
 
     print("\n[Step 1.5b] After training on VALIDATION split...")
     cmd = [
@@ -184,11 +242,16 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
+    eval_results['after_val'] = parse_eval_metrics(result.stdout)
+
+    # Print summary table
+    print_phase_summary("PHASE 1 SUMMARY: Judgment Training", eval_results)
 
     # Record phase result
     pipeline.record_phase_result(
         phase_name="phase1_judgment",
         status="completed",
+        metrics=eval_results,
         output_paths={
             "responses": str(phase_output / "responses.jsonl"),
             "training_data": str(phase_output / "training_data.jsonl"),
