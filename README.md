@@ -86,21 +86,38 @@ pip install -r requirements.txt
 ### Quick Start (Recommended)
 
 ```bash
+# Show help
+bash run_multiphase_pipeline.sh --help
+
 # Run full 3-phase pipeline (LoRA fine-tuning, lr=1e-4)
-bash run_multiphase_pipeline.sh Qwen/Qwen2.5-0.5B-Instruct 10000 1000 triviaqa 512 32
+bash run_multiphase_pipeline.sh \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --train_samples 10000 \
+    --test_samples 1000 \
+    --inference_batch 512 \
+    --train_batch 32
 
 # Run full 3-phase pipeline (Full fine-tuning, lr=1e-5)
-bash run_multiphase_pipeline.sh Qwen/Qwen2.5-0.5B-Instruct 10000 1000 triviaqa 512 32 true
+bash run_multiphase_pipeline.sh \
+    --model Qwen/Qwen2.5-0.5B-Instruct \
+    --train_samples 10000 \
+    --test_samples 1000 \
+    --no_lora
 ```
 
 Parameters:
-1. `model` - Model name (default: Qwen/Qwen2.5-0.5B-Instruct)
-2. `train_samples` - Number of training samples (default: 1000)
-3. `test_samples` - Number of test samples (default: 100)
-4. `dataset` - Dataset name for experiment naming (default: triviaqa)
-5. `inference_batch_size` - Batch size for inference (default: 16)
-6. `train_batch_size` - Batch size for training (default: 32)
-7. `no_lora` - Set to "true" for full fine-tuning (default: false)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--model` | Qwen/Qwen2.5-0.5B-Instruct | Model name |
+| `--train_samples` | 1000 | Number of training samples |
+| `--test_samples` | 100 | Number of test samples |
+| `--dataset` | triviaqa | Dataset name for experiment naming |
+| `--inference_batch` | 16 | Batch size for inference |
+| `--train_batch` | 32 | Batch size for training |
+| `--epochs` | 1 | Epochs for judgment training |
+| `--knowledge_epochs` | 5 | Epochs for knowledge training |
+| `--num_trials` | 5 | Responses per question |
+| `--no_lora` | false | Use full fine-tuning instead of LoRA |
 
 ### Python API
 
