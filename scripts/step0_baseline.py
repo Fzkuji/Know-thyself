@@ -167,7 +167,7 @@ class BaselineEvaluator:
                 correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
 
                 accuracy = correct_count / num_trials
-                actual = classify_ability(accuracy)
+                actual = classify_ability(correct_count, num_trials)
 
                 # Debug first 3 samples to check is_correct logic
                 if batch_start == 0 and i < 3:

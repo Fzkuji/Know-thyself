@@ -58,6 +58,8 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "inference_batch_size": args.inference_batch_size,
         "learning_rate": args.lr,
         "no_lora": args.no_lora,
+        "adaptive": args.adaptive,
+        "max_steps_per_sample": args.max_steps_per_sample,
     }
 
     log_path = output_dir / "config.json"
@@ -138,9 +140,12 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--epochs", str(args.epochs),
         "--batch_size", str(args.batch_size),
         "--lr", str(args.lr),
+        "--max_steps_per_sample", str(args.max_steps_per_sample),
     ]
     if args.no_lora:
         cmd.append("--no_lora")
+    if args.adaptive:
+        cmd.append("--adaptive")
     subprocess.run(cmd, check=True)
 
     # Step 5: Evaluate AFTER training on both splits
@@ -222,9 +227,12 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--test_samples", str(args.test_samples),
         "--lr", str(args.lr),
+        "--max_steps_per_sample", str(args.max_steps_per_sample),
     ]
     if args.no_lora:
         cmd.append("--no_lora")
+    if args.adaptive:
+        cmd.append("--adaptive")
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 2
@@ -269,9 +277,12 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--test_samples", str(args.test_samples),
         "--lr", str(args.lr),
+        "--max_steps_per_sample", str(args.max_steps_per_sample),
     ]
     if args.no_lora:
         cmd.append("--no_lora")
+    if args.adaptive:
+        cmd.append("--adaptive")
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 3
@@ -309,15 +320,19 @@ def main():
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Training params
-    parser.add_argument("--epochs", type=int, default=1,
-                        help="Epochs for judgment training")
-    parser.add_argument("--knowledge_epochs", type=int, default=5,
-                        help="Epochs for knowledge training (Phase 2)")
+    parser.add_argument("--epochs", type=int, default=2,
+                        help="Epochs for judgment training (default: 2 for adaptive)")
+    parser.add_argument("--knowledge_epochs", type=int, default=2,
+                        help="Epochs for knowledge training (default: 2 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="Learning rate (1e-4 for LoRA, 1e-5 for full fine-tuning)")
     parser.add_argument("--no_lora", action="store_true",
                         help="Disable LoRA for full fine-tuning")
+    parser.add_argument("--adaptive", action="store_true", default=True,
+                        help="Use adaptive training (train each sample until learned)")
+    parser.add_argument("--max_steps_per_sample", type=int, default=10,
+                        help="Max training steps per sample in adaptive mode")
 
     args = parser.parse_args()
 

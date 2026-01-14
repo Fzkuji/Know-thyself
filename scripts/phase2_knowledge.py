@@ -4,6 +4,10 @@ Phase 2: Knowledge Learning
 Train the model to learn factual knowledge by teaching it to answer questions correctly.
 This is different from judgment training - here we teach knowledge, not metacognition.
 
+Supports two training modes:
+- Standard: Fixed epochs with batch training
+- Adaptive: Train each sample until learned (tested after each step)
+
 Steps:
 2.1 Build QA training data from training samples
 2.2 Train model with QA data -> LoRA_knowledge
@@ -86,8 +90,8 @@ def main():
                         help="Input file with questions and answers (from Phase 1)")
     parser.add_argument("--output_dir", type=str,
                         default=str(project_root / "outputs/phase2_knowledge"))
-    parser.add_argument("--epochs", type=int, default=5,
-                        help="More epochs for knowledge learning")
+    parser.add_argument("--epochs", type=int, default=2,
+                        help="Number of epochs (default: 2 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="1e-4 for LoRA, 1e-5 for full fine-tuning")
@@ -98,6 +102,10 @@ def main():
                         help="Don't merge adapter into base model")
     parser.add_argument("--test_samples", type=int, default=100,
                         help="Number of samples to test knowledge acquisition")
+    parser.add_argument("--adaptive", action="store_true", default=True,
+                        help="Use adaptive training (train each sample until learned)")
+    parser.add_argument("--max_steps_per_sample", type=int, default=10,
+                        help="Max training steps per sample in adaptive mode")
 
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None,
@@ -143,29 +151,74 @@ def main():
     # Step 2.2: Setup model and train
     print(f"\nSetting up model: {args.model}")
     print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+    print(f"Adaptive training: {args.adaptive}")
     model, tokenizer = setup_model_for_training(args.model, use_lora=not args.no_lora)
 
-    print("Preparing dataset...")
-    datasets = prepare_dataset_for_training(qa_data, tokenizer)
-    print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
-
     adapter_path = output_dir / "knowledge"
-    print(f"\nTraining knowledge adapter...")
-    print(f"Output: {adapter_path}")
 
-    train_metacognition(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=datasets["train"],
-        val_dataset=datasets["validation"],
-        output_dir=str(adapter_path),
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.lr,
-        use_lora=not args.no_lora,
-    )
+    if args.adaptive:
+        # Adaptive training: train each sample until learned
+        from src.adaptive_trainer import AdaptiveKnowledgeTrainer
 
-    print(f"\nKnowledge adapter saved to {adapter_path}")
+        print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
+        print(f"Epochs: {args.epochs}")
+
+        # Prepare samples with question and answers for adaptive training
+        adaptive_samples = []
+        for sample in qa_data:
+            # Extract question from messages
+            question = sample["messages"][1]["content"]  # User message is the question
+            answer = sample["messages"][2]["content"]  # Assistant message is the answer
+            adaptive_samples.append({
+                "messages": sample["messages"],
+                "question": question,
+                "answers": [answer],
+                "normalized_answers": [answer],
+            })
+
+        trainer = AdaptiveKnowledgeTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            learning_rate=args.lr,
+            max_steps_per_sample=args.max_steps_per_sample,
+        )
+
+        print(f"\nTraining on {len(adaptive_samples)} samples...")
+        stats = trainer.train_dataset(
+            adaptive_samples,
+            num_epochs=args.epochs,
+        )
+
+        # Save model
+        print(f"\nSaving model to {adapter_path}")
+        model.save_pretrained(str(adapter_path))
+        tokenizer.save_pretrained(str(adapter_path))
+
+        print(f"\nAdaptive training complete!")
+        print(f"Final stats: {stats['per_epoch'][-1]}")
+
+    else:
+        # Standard training
+        print("Preparing dataset...")
+        datasets = prepare_dataset_for_training(qa_data, tokenizer)
+        print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
+
+        print(f"\nTraining knowledge adapter...")
+        print(f"Output: {adapter_path}")
+
+        train_metacognition(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=datasets["train"],
+            val_dataset=datasets["validation"],
+            output_dir=str(adapter_path),
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.lr,
+            use_lora=not args.no_lora,
+        )
+
+    print(f"\nKnowledge model saved to {adapter_path}")
 
     # Step 2.3: Merge adapter into base model (or use full fine-tuned model directly)
     merged_path = None

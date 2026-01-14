@@ -63,24 +63,28 @@ def evaluate_responses(responses: List[str], gold_answers: List[str]) -> Dict:
     }
 
 
-def classify_ability(accuracy: float, threshold_uncertain: float = 1.0, threshold_cannot: float = 0.5) -> str:
+def classify_ability(correct_count: int, total: int = 5) -> str:
     """
-    Classify model's ability based on accuracy.
+    Classify model's ability based on correct count.
+
+    Strict criteria for 5 trials:
+    - 5/5 correct = "can" (definitely knows)
+    - 0/5 correct = "cannot" (definitely doesn't know)
+    - 1-4/5 correct = "uncertain" (inconsistent)
 
     Args:
-        accuracy: Accuracy across multiple trials
-        threshold_uncertain: Below this = uncertain (default: 100% means any error = uncertain)
-        threshold_cannot: Below this = cannot
+        correct_count: Number of correct responses
+        total: Total number of trials (default: 5)
 
     Returns:
         "can" / "uncertain" / "cannot"
     """
-    if accuracy >= threshold_uncertain:
+    if correct_count == total:
         return "can"
-    elif accuracy >= threshold_cannot:
-        return "uncertain"
-    else:
+    elif correct_count == 0:
         return "cannot"
+    else:
+        return "uncertain"
 
 
 def evaluate_samples(samples: List[Dict]) -> List[Dict]:
@@ -100,7 +104,7 @@ def evaluate_samples(samples: List[Dict]) -> List[Dict]:
             sample.get("normalized_answers", sample["answers"])
         )
 
-        ability = classify_ability(eval_result["accuracy"])
+        ability = classify_ability(eval_result["correct_count"], eval_result["total"])
 
         result = sample.copy()
         result["evaluation"] = eval_result

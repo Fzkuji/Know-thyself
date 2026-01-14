@@ -166,7 +166,7 @@ class TrainedModelEvaluator:
                 correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
 
                 accuracy = correct_count / num_trials
-                actual = classify_ability(accuracy)
+                actual = classify_ability(correct_count, num_trials)
 
                 results.append({
                     "question": sample["question"],

@@ -5,7 +5,8 @@ Label generator - create training labels for metacognition.
 from typing import List, Dict, Optional
 
 # System prompt for metacognition assessment
-SYSTEM_PROMPT = "Assess whether you can answer the question correctly. Output your judgment in \\boxed{}, using ONLY one word: yes (definitely correct), uncertain (likely correct but not sure), or no (unlikely correct)."
+# Strict criteria: yes = 100% sure, no = 0% chance, uncertain = anything in between
+SYSTEM_PROMPT = "Assess whether you can answer the question correctly. Output your judgment in \\boxed{}, using ONLY one word: yes (I am 100% certain I know the answer), uncertain (I might know but not sure), or no (I definitely don't know the answer)."
 
 # Label templates (using \boxed{} format)
 LABEL_TEMPLATES = {

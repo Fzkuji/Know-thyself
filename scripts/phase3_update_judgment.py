@@ -82,7 +82,7 @@ def collect_responses_with_model(
     for sample in samples_with_responses:
         gold_answers = sample.get("normalized_answers", sample.get("answers", []))
         evaluation = evaluate_responses(sample["responses"], gold_answers)
-        ability = classify_ability(evaluation["accuracy"])
+        ability = classify_ability(evaluation["correct_count"], evaluation["total"])
 
         result = sample.copy()
         result["evaluation"] = evaluation
@@ -205,13 +205,17 @@ def main():
     # Training params
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_trials", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="1e-4 for LoRA, 1e-5 for full fine-tuning")
     parser.add_argument("--no_lora", action="store_true",
                         help="Disable LoRA for full fine-tuning")
     parser.add_argument("--inference_batch_size", type=int, default=16)
+    parser.add_argument("--adaptive", action="store_true", default=True,
+                        help="Use adaptive training (train each sample until correct)")
+    parser.add_argument("--max_steps_per_sample", type=int, default=10,
+                        help="Max training steps per sample in adaptive mode")
 
     # Evaluation
     parser.add_argument("--test_samples", type=int, default=100)
@@ -283,27 +287,60 @@ def main():
     print(f"\nSetting up model for judgment training...")
     print(f"Base: {args.base_model}")
     print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+    print(f"Adaptive training: {args.adaptive}")
     model, tokenizer = setup_model_for_training(args.base_model, use_lora=not args.no_lora)
 
-    print("Preparing dataset...")
-    datasets = prepare_dataset_for_training(training_data, tokenizer)
-    print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
-
     adapter_path = output_dir / "judgment_v2"
-    print(f"\nTraining judgment v2...")
-    train_metacognition(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=datasets["train"],
-        val_dataset=datasets["validation"],
-        output_dir=str(adapter_path),
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.lr,
-        use_lora=not args.no_lora,
-    )
 
-    print(f"Judgment adapter saved to {adapter_path}")
+    if args.adaptive:
+        # Adaptive training for judgment
+        from src.adaptive_trainer import AdaptiveJudgmentTrainer
+
+        print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
+        print(f"Epochs: {args.epochs}")
+
+        trainer = AdaptiveJudgmentTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            learning_rate=args.lr,
+            max_steps_per_sample=args.max_steps_per_sample,
+        )
+
+        print(f"\nTraining on {len(training_data)} samples...")
+        stats = trainer.train_dataset(
+            training_data,
+            system_prompt=SYSTEM_PROMPT,
+            num_epochs=args.epochs,
+        )
+
+        # Save model
+        print(f"\nSaving model to {adapter_path}")
+        model.save_pretrained(str(adapter_path))
+        tokenizer.save_pretrained(str(adapter_path))
+
+        print(f"\nAdaptive training complete!")
+        print(f"Final stats: {stats['per_epoch'][-1]}")
+
+    else:
+        # Standard training
+        print("Preparing dataset...")
+        datasets = prepare_dataset_for_training(training_data, tokenizer)
+        print(f"Train: {len(datasets['train'])}, Val: {len(datasets['validation'])}")
+
+        print(f"\nTraining judgment v2...")
+        train_metacognition(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=datasets["train"],
+            val_dataset=datasets["validation"],
+            output_dir=str(adapter_path),
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.lr,
+            use_lora=not args.no_lora,
+        )
+
+    print(f"Judgment model saved to {adapter_path}")
 
     # Step 3.4: Final evaluation on both train and validation splits
     print("\n" + "=" * 60)
