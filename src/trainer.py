@@ -107,7 +107,7 @@ def train_metacognition(
         report_to="none",
         max_grad_norm=1.0,  # Gradient clipping
         weight_decay=0.01,  # Regularization
-        max_seq_length=max_length,
+        max_length=max_length,  # Max sequence length
         dataset_text_field="text",  # Field containing the formatted text
         packing=False,  # Don't pack multiple samples
     )
