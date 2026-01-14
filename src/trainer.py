@@ -114,7 +114,7 @@ def train_metacognition(
         save_strategy="epoch",
         eval_strategy="epoch" if val_tokenized else "no",
         fp16=True,
-        report_to="wandb",
+        report_to="none",
     )
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
