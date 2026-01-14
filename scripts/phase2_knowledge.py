@@ -161,6 +161,7 @@ def main():
         num_epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,
+        use_lora=not args.no_lora,
     )
 
     print(f"\nKnowledge adapter saved to {adapter_path}")
