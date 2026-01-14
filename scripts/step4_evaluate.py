@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--lora_path", type=str, default=str(project_root / "outputs/metacog"))
     parser.add_argument("--num_samples", type=int, default=100, help="Number of test samples")
     parser.add_argument("--num_trials", type=int, default=5, help="Trials per question for actual ability")
-    parser.add_argument("--split", type=str, default="test")
+    parser.add_argument("--split", type=str, default="validation")
     parser.add_argument("--inference_batch_size", type=int, default=16, help="Batch size for inference")
     args = parser.parse_args()
 

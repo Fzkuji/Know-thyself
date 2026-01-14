@@ -75,8 +75,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     project_root = Path(__file__).resolve().parent.parent
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
 
-    # Step 1: Collect responses
-    print("\n[Step 1.1] Collecting responses...")
+    # Step 1: Collect responses (using train split)
+    print("\n[Step 1.1] Collecting responses from train split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step1_collect_responses.py"),
         "--model", args.model,
@@ -84,6 +84,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--output", str(phase_output / "responses.jsonl"),
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
+        "--split", "train",
     ]
     subprocess.run(cmd, check=True)
 
@@ -108,8 +109,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     ]
     subprocess.run(cmd, check=True)
 
-    # Step 4: Evaluate
-    print("\n[Step 1.4] Evaluating judgment accuracy...")
+    # Step 4: Evaluate (using validation split as held-out test set)
+    print("\n[Step 1.4] Evaluating judgment accuracy on validation split...")
     cmd = [
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
         "--model", args.model,
@@ -117,6 +118,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--num_samples", str(args.test_samples),
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
+        "--split", "validation",  # Held-out test set (not seen during training)
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)

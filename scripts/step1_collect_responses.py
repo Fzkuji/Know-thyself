@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--inference_batch_size", type=int, default=8, help="Batch size for inference")
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--output", type=str, default=str(project_root / "data/step1_responses.jsonl"))
-    parser.add_argument("--split", type=str, default="validation")
+    parser.add_argument("--split", type=str, default="train")
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
