@@ -106,6 +106,10 @@ def main():
                         help="Use adaptive training (train each sample until learned)")
     parser.add_argument("--max_steps_per_sample", type=int, default=10,
                         help="Max training steps per sample in adaptive mode")
+    parser.add_argument("--filter_ability", type=str, nargs="+", default=None,
+                        help="Only train samples with these abilities (e.g., --filter_ability cannot uncertain)")
+    parser.add_argument("--skip_correct", action="store_true", default=True,
+                        help="Skip samples model already answers correctly (test before each epoch)")
 
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None,
@@ -174,6 +178,7 @@ def main():
                 "question": question,
                 "answers": [answer],
                 "normalized_answers": [answer],
+                "original_ability": sample.get("original_ability", ""),  # Preserve ability for filtering
             })
 
         trainer = AdaptiveKnowledgeTrainer(
@@ -184,9 +189,15 @@ def main():
         )
 
         print(f"\nTraining on {len(adaptive_samples)} samples...")
+        if args.filter_ability:
+            print(f"Filtering to abilities: {args.filter_ability}")
+        print(f"Skip already correct: {args.skip_correct}")
+
         stats = trainer.train_dataset(
             adaptive_samples,
             num_epochs=args.epochs,
+            filter_by_ability=args.filter_ability,
+            skip_correct=args.skip_correct,
         )
 
         # Save model

@@ -241,6 +241,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--batch_size", str(args.batch_size),
         "--lr", str(args.lr),
         "--max_steps_per_sample", str(args.max_steps_per_sample),
+        "--skip_correct",  # Skip samples already judged correctly
     ]
     if args.no_lora:
         cmd.append("--no_lora")
@@ -334,6 +335,9 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         "--test_samples", str(args.test_samples),
         "--lr", str(args.lr),
         "--max_steps_per_sample", str(args.max_steps_per_sample),
+        # Only train samples the model doesn't already know
+        "--filter_ability", "cannot", "uncertain",
+        "--skip_correct",
     ]
     if args.no_lora:
         cmd.append("--no_lora")
@@ -384,6 +388,7 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         "--test_samples", str(args.test_samples),
         "--lr", str(args.lr),
         "--max_steps_per_sample", str(args.max_steps_per_sample),
+        "--skip_correct",  # Skip samples already judged correctly
     ]
     if args.no_lora:
         cmd.append("--no_lora")

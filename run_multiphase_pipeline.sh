@@ -19,8 +19,8 @@ DATASET="triviaqa"
 INFERENCE_BATCH_SIZE=16
 TRAIN_BATCH_SIZE=32
 NO_LORA="false"
-EPOCHS=1
-KNOWLEDGE_EPOCHS=1
+EPOCHS=10
+KNOWLEDGE_EPOCHS=10
 NUM_TRIALS=5
 ADAPTIVE="true"
 MAX_STEPS_PER_SAMPLE=10
@@ -36,8 +36,8 @@ show_help() {
     echo "  --dataset             Dataset name for experiment naming (default: triviaqa)"
     echo "  --inference_batch     Batch size for inference (default: 16)"
     echo "  --train_batch         Batch size for training (default: 32)"
-    echo "  --epochs              Epochs for judgment training (default: 1)"
-    echo "  --knowledge_epochs    Epochs for knowledge training (default: 1)"
+    echo "  --epochs              Epochs for judgment training (default: 10)"
+    echo "  --knowledge_epochs    Epochs for knowledge training (default: 10)"
     echo "  --num_trials          Responses per question (default: 5)"
     echo "  --max_steps           Max steps per sample in adaptive training (default: 10)"
     echo "  --no_lora             Use full fine-tuning instead of LoRA"
@@ -189,7 +189,8 @@ echo "=============================================="
 echo "Results saved to: experiments/{auto-generated-name}/"
 echo ""
 echo "Training approach:"
-echo "  - Adaptive: Each sample trained until learned (tested after each step)"
+echo "  - Epoch-level filtering: Before each epoch, test all samples"
+echo "  - Only train samples that are still incorrect (skip already learned)"
 echo "  - Classification: 5/5=can, 0/5=cannot, 1-4/5=uncertain"
 echo ""
 echo "Expected improvements:"

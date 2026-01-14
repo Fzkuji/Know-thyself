@@ -216,6 +216,8 @@ def main():
                         help="Use adaptive training (train each sample until correct)")
     parser.add_argument("--max_steps_per_sample", type=int, default=10,
                         help="Max training steps per sample in adaptive mode")
+    parser.add_argument("--skip_correct", action="store_true", default=True,
+                        help="Skip samples model already judges correctly (test before each epoch)")
 
     # Evaluation
     parser.add_argument("--test_samples", type=int, default=100)
@@ -298,6 +300,7 @@ def main():
 
         print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
         print(f"Epochs: {args.epochs}")
+        print(f"Skip already correct: {args.skip_correct}")
 
         trainer = AdaptiveJudgmentTrainer(
             model=model,
@@ -311,6 +314,7 @@ def main():
             training_data,
             system_prompt=SYSTEM_PROMPT,
             num_epochs=args.epochs,
+            skip_correct=args.skip_correct,
         )
 
         # Save model

@@ -1,9 +1,14 @@
 """
-Adaptive trainer - train each sample until learned.
+Adaptive trainer - train samples with inline testing.
 
-Key idea: Instead of training for fixed epochs, train each sample
-until the model demonstrates it has learned (can answer correctly
-or make correct judgment).
+Training flow for each sample in an epoch:
+1. Test if model already knows/judges correctly
+2. If correct -> skip (don't train)
+3. If wrong -> train one step -> test again
+
+This is more efficient than testing all samples before/after each epoch.
+
+For knowledge training, can also filter by ability (only train uncertain/cannot).
 """
 
 import torch
@@ -143,23 +148,48 @@ class AdaptiveKnowledgeTrainer:
             "final_loss": loss.item(),
         }
 
+    def _train_one_step(self, sample: Dict) -> float:
+        """Train one gradient step on a sample. Returns loss."""
+        self.model.train()
+        inputs = self._tokenize_sample(sample)
+
+        outputs = self.model(**inputs)
+        loss = outputs.loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        self.optimizer.step()
+
+        return loss.item()
+
     def train_dataset(
         self,
         samples: List[Dict],
         num_epochs: int = 2,
         progress_callback: Callable = None,
+        filter_by_ability: List[str] = None,
+        skip_correct: bool = True,
     ) -> Dict:
         """
-        Train on all samples adaptively.
+        Train on samples with epoch-level filtering.
 
         Args:
             samples: List of training samples with 'messages', 'question', 'answers'
             num_epochs: Number of passes through the dataset
             progress_callback: Optional callback for progress updates
+            filter_by_ability: Only train samples with these abilities (e.g., ["cannot", "uncertain"])
+            skip_correct: If True, skip samples that model already answers correctly
 
         Returns:
             Training statistics
         """
+        # Filter by ability if specified
+        if filter_by_ability:
+            filtered = [s for s in samples if s.get("original_ability", s.get("ability")) in filter_by_ability]
+            print(f"Filtered by ability {filter_by_ability}: {len(filtered)}/{len(samples)} samples")
+            samples = filtered
+
         total_samples = len(samples)
         stats = {
             "total_samples": total_samples,
@@ -169,14 +199,17 @@ class AdaptiveKnowledgeTrainer:
 
         for epoch in range(num_epochs):
             epoch_stats = {
-                "learned": 0,
-                "not_learned": 0,
-                "total_steps": 0,
-                "steps_per_sample": [],  # Record steps for each sample
-                "steps_distribution": {},  # Count samples by steps needed
+                "total_in_epoch": total_samples,
+                "skipped_correct": 0,
+                "trained": 0,
+                "correct_after": 0,
+                "still_wrong": 0,
             }
 
-            pbar = tqdm(samples, desc=f"Epoch {epoch+1}/{num_epochs}")
+            losses = []
+            print(f"\nEpoch {epoch+1}/{num_epochs}")
+            pbar = tqdm(samples, desc=f"Epoch {epoch+1}")
+
             for sample in pbar:
                 question = sample.get("question", "")
                 gold_answers = sample.get("normalized_answers", sample.get("answers", []))
@@ -184,42 +217,47 @@ class AdaptiveKnowledgeTrainer:
                 if not question or not gold_answers:
                     continue
 
-                result = self.train_sample(sample, question, gold_answers)
-
-                if result["learned"]:
-                    epoch_stats["learned"] += 1
+                # Test first, only train if wrong
+                if skip_correct and self._test_knowledge(question, gold_answers):
+                    epoch_stats["skipped_correct"] += 1
+                    epoch_stats["correct_after"] += 1
                 else:
-                    epoch_stats["not_learned"] += 1
-                epoch_stats["total_steps"] += result["steps"]
-                epoch_stats["steps_per_sample"].append(result["steps"])
+                    # Train one step
+                    loss = self._train_one_step(sample)
+                    losses.append(loss)
+                    epoch_stats["trained"] += 1
 
-                # Track distribution
-                steps_key = str(result["steps"]) if result["learned"] else f"{result['steps']}(failed)"
-                epoch_stats["steps_distribution"][steps_key] = epoch_stats["steps_distribution"].get(steps_key, 0) + 1
+                    # Test after training
+                    if self._test_knowledge(question, gold_answers):
+                        epoch_stats["correct_after"] += 1
+                    else:
+                        epoch_stats["still_wrong"] += 1
 
                 # Update progress bar
-                learn_rate = epoch_stats["learned"] / (epoch_stats["learned"] + epoch_stats["not_learned"]) * 100
-                avg_steps = epoch_stats["total_steps"] / len(epoch_stats["steps_per_sample"])
                 pbar.set_postfix({
-                    "learned": f"{learn_rate:.1f}%",
-                    "avg_steps": f"{avg_steps:.2f}"
+                    "skip": epoch_stats["skipped_correct"],
+                    "train": epoch_stats["trained"],
+                    "acc": f"{epoch_stats['correct_after']/(epoch_stats['skipped_correct']+epoch_stats['trained'])*100:.1f}%" if (epoch_stats['skipped_correct']+epoch_stats['trained']) > 0 else "0%"
                 })
 
-            # Calculate statistics
-            if epoch_stats["steps_per_sample"]:
-                avg_steps = sum(epoch_stats["steps_per_sample"]) / len(epoch_stats["steps_per_sample"])
-                epoch_stats["avg_steps"] = avg_steps
+            if losses:
+                epoch_stats["avg_loss"] = sum(losses) / len(losses)
 
             stats["per_epoch"].append(epoch_stats)
 
-            # Print detailed statistics
-            print(f"\nEpoch {epoch+1}: Learned {epoch_stats['learned']}/{total_samples} "
-                  f"({epoch_stats['learned']/total_samples*100:.1f}%)")
-            print(f"  Average steps per sample: {epoch_stats.get('avg_steps', 0):.2f}")
-            print(f"  Steps distribution:")
-            for steps, count in sorted(epoch_stats["steps_distribution"].items(), key=lambda x: (x[0].replace('(failed)', '999'))):
-                pct = count / len(epoch_stats["steps_per_sample"]) * 100
-                print(f"    {steps} step(s): {count} samples ({pct:.1f}%)")
+            # Print epoch summary
+            print(f"\nEpoch {epoch+1} Summary:")
+            print(f"  Skipped (already correct): {epoch_stats['skipped_correct']}")
+            print(f"  Trained: {epoch_stats['trained']}")
+            print(f"  Correct after epoch: {epoch_stats['correct_after']}/{total_samples} "
+                  f"({epoch_stats['correct_after']/total_samples*100:.1f}%)")
+            if epoch_stats.get("avg_loss"):
+                print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
+
+            # Early stopping if all samples are correct
+            if epoch_stats["correct_after"] == total_samples:
+                print(f"\nAll samples learned! Stopping early at epoch {epoch+1}")
+                break
 
         return stats
 
@@ -357,13 +395,40 @@ class AdaptiveJudgmentTrainer:
             "final_loss": loss.item(),
         }
 
+    def _train_one_step(self, sample: Dict) -> float:
+        """Train one gradient step on a sample. Returns loss."""
+        self.model.train()
+        inputs = self._tokenize_sample(sample)
+
+        outputs = self.model(**inputs)
+        loss = outputs.loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        self.optimizer.step()
+
+        return loss.item()
+
     def train_dataset(
         self,
         samples: List[Dict],
         system_prompt: str,
         num_epochs: int = 2,
+        skip_correct: bool = True,
     ) -> Dict:
-        """Train on all judgment samples adaptively."""
+        """
+        Train on judgment samples with epoch-level filtering.
+
+        Args:
+            samples: List of training samples with 'messages', 'question', 'ability'
+            system_prompt: System prompt for judgment task
+            num_epochs: Number of passes through the dataset
+            skip_correct: If True, skip samples that model already judges correctly
+
+        Returns:
+            Training statistics
+        """
         total_samples = len(samples)
         stats = {
             "total_samples": total_samples,
@@ -373,14 +438,20 @@ class AdaptiveJudgmentTrainer:
 
         for epoch in range(num_epochs):
             epoch_stats = {
-                "learned": 0,
-                "not_learned": 0,
-                "total_steps": 0,
-                "steps_per_sample": [],  # Record steps for each sample
-                "steps_distribution": {},  # Count samples by steps needed
+                "total_in_epoch": total_samples,
+                "skipped_correct": 0,
+                "trained": 0,
+                "correct_after": 0,
+                "still_wrong": 0,
+                "by_ability": {"can": {"correct": 0, "total": 0},
+                               "uncertain": {"correct": 0, "total": 0},
+                               "cannot": {"correct": 0, "total": 0}},
             }
 
-            pbar = tqdm(samples, desc=f"Epoch {epoch+1}/{num_epochs}")
+            losses = []
+            print(f"\nEpoch {epoch+1}/{num_epochs}")
+            pbar = tqdm(samples, desc=f"Epoch {epoch+1}")
+
             for sample in pbar:
                 question = sample.get("question", "")
                 ability = sample.get("ability", "")
@@ -388,40 +459,59 @@ class AdaptiveJudgmentTrainer:
                 if not question or not ability:
                     continue
 
-                result = self.train_sample(sample, question, ability, system_prompt)
+                epoch_stats["by_ability"][ability]["total"] += 1
 
-                if result["learned"]:
-                    epoch_stats["learned"] += 1
+                # Test first, only train if wrong
+                if skip_correct and self._test_judgment(question, ability, system_prompt):
+                    epoch_stats["skipped_correct"] += 1
+                    epoch_stats["correct_after"] += 1
+                    epoch_stats["by_ability"][ability]["correct"] += 1
                 else:
-                    epoch_stats["not_learned"] += 1
-                epoch_stats["total_steps"] += result["steps"]
-                epoch_stats["steps_per_sample"].append(result["steps"])
+                    # Train one step
+                    loss = self._train_one_step(sample)
+                    losses.append(loss)
+                    epoch_stats["trained"] += 1
 
-                # Track distribution
-                steps_key = str(result["steps"]) if result["learned"] else f"{result['steps']}(failed)"
-                epoch_stats["steps_distribution"][steps_key] = epoch_stats["steps_distribution"].get(steps_key, 0) + 1
+                    # Test after training
+                    if self._test_judgment(question, ability, system_prompt):
+                        epoch_stats["correct_after"] += 1
+                        epoch_stats["by_ability"][ability]["correct"] += 1
+                    else:
+                        epoch_stats["still_wrong"] += 1
 
-                learn_rate = epoch_stats["learned"] / (epoch_stats["learned"] + epoch_stats["not_learned"]) * 100
-                avg_steps = epoch_stats["total_steps"] / len(epoch_stats["steps_per_sample"])
+                # Update progress bar
                 pbar.set_postfix({
-                    "learned": f"{learn_rate:.1f}%",
-                    "avg_steps": f"{avg_steps:.2f}"
+                    "skip": epoch_stats["skipped_correct"],
+                    "train": epoch_stats["trained"],
+                    "acc": f"{epoch_stats['correct_after']/(epoch_stats['skipped_correct']+epoch_stats['trained'])*100:.1f}%" if (epoch_stats['skipped_correct']+epoch_stats['trained']) > 0 else "0%"
                 })
 
-            # Calculate statistics
-            if epoch_stats["steps_per_sample"]:
-                avg_steps = sum(epoch_stats["steps_per_sample"]) / len(epoch_stats["steps_per_sample"])
-                epoch_stats["avg_steps"] = avg_steps
+            if losses:
+                epoch_stats["avg_loss"] = sum(losses) / len(losses)
 
             stats["per_epoch"].append(epoch_stats)
 
-            # Print detailed statistics
-            print(f"\nEpoch {epoch+1}: Learned {epoch_stats['learned']}/{total_samples} "
-                  f"({epoch_stats['learned']/total_samples*100:.1f}%)")
-            print(f"  Average steps per sample: {epoch_stats.get('avg_steps', 0):.2f}")
-            print(f"  Steps distribution:")
-            for steps, count in sorted(epoch_stats["steps_distribution"].items(), key=lambda x: (x[0].replace('(failed)', '999'))):
-                pct = count / len(epoch_stats["steps_per_sample"]) * 100
-                print(f"    {steps} step(s): {count} samples ({pct:.1f}%)")
+            # Print epoch summary
+            print(f"\nEpoch {epoch+1} Summary:")
+            print(f"  Skipped (already correct): {epoch_stats['skipped_correct']}")
+            print(f"  Trained: {epoch_stats['trained']}")
+            print(f"  Correct after epoch: {epoch_stats['correct_after']}/{total_samples} "
+                  f"({epoch_stats['correct_after']/total_samples*100:.1f}%)")
+
+            # Per-ability breakdown
+            print(f"  By ability:")
+            for ability in ["can", "uncertain", "cannot"]:
+                ab_stats = epoch_stats["by_ability"][ability]
+                if ab_stats["total"] > 0:
+                    acc = ab_stats["correct"] / ab_stats["total"] * 100
+                    print(f"    {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
+
+            if epoch_stats.get("avg_loss"):
+                print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
+
+            # Early stopping if all samples are correct
+            if epoch_stats["correct_after"] == total_samples:
+                print(f"\nAll samples learned! Stopping early at epoch {epoch+1}")
+                break
 
         return stats
