@@ -52,7 +52,38 @@ def parse_eval_metrics(output: str) -> dict:
         metrics['actual_uncertain'] = int(match.group(2))
         metrics['actual_cannot'] = int(match.group(3))
 
+    # Extract confusion matrix
+    # predicted_can row
+    match = re.search(r'predicted_can\s+(\d+)\s+(\d+)\s+(\d+)', output)
+    if match:
+        metrics['cm_can_can'] = int(match.group(1))
+        metrics['cm_can_uncertain'] = int(match.group(2))
+        metrics['cm_can_cannot'] = int(match.group(3))
+
+    # predicted_uncertain row
+    match = re.search(r'predicted_uncertain\s+(\d+)\s+(\d+)\s+(\d+)', output)
+    if match:
+        metrics['cm_uncertain_can'] = int(match.group(1))
+        metrics['cm_uncertain_uncertain'] = int(match.group(2))
+        metrics['cm_uncertain_cannot'] = int(match.group(3))
+
+    # predicted_cannot row
+    match = re.search(r'predicted_cannot\s+(\d+)\s+(\d+)\s+(\d+)', output)
+    if match:
+        metrics['cm_cannot_can'] = int(match.group(1))
+        metrics['cm_cannot_uncertain'] = int(match.group(2))
+        metrics['cm_cannot_cannot'] = int(match.group(3))
+
     return metrics
+
+
+def print_confusion_matrix(name: str, metrics: dict):
+    """Print a single confusion matrix."""
+    print(f"\n  {name}")
+    print(f"  {'':20} {'actual_can':>12} {'actual_unc':>12} {'actual_cannot':>14}")
+    print(f"  predicted_can      {metrics.get('cm_can_can', 0):>12} {metrics.get('cm_can_uncertain', 0):>12} {metrics.get('cm_can_cannot', 0):>14}")
+    print(f"  predicted_uncertain{metrics.get('cm_uncertain_can', 0):>12} {metrics.get('cm_uncertain_uncertain', 0):>12} {metrics.get('cm_uncertain_cannot', 0):>14}")
+    print(f"  predicted_cannot   {metrics.get('cm_cannot_can', 0):>12} {metrics.get('cm_cannot_uncertain', 0):>12} {metrics.get('cm_cannot_cannot', 0):>14}")
 
 
 def print_phase_summary(title: str, results: dict):
@@ -60,24 +91,36 @@ def print_phase_summary(title: str, results: dict):
     print("\n" + "=" * 70)
     print(f"  {title}")
     print("=" * 70)
-    print(f"{'':20} {'TRAIN':>20} {'VALIDATION':>20}")
-    print("-" * 70)
 
-    # Exact match rates
+    # Exact match rates summary
+    print(f"\n  EXACT MATCH ACCURACY")
+    print(f"  {'':20} {'TRAIN':>20} {'VALIDATION':>20}")
+    print("  " + "-" * 66)
+
     before_train = results.get('before_train', {}).get('exact_match_rate', 0)
     before_val = results.get('before_val', {}).get('exact_match_rate', 0)
     after_train = results.get('after_train', {}).get('exact_match_rate', 0)
     after_val = results.get('after_val', {}).get('exact_match_rate', 0)
 
-    print(f"{'Before training':20} {before_train:>19.1f}% {before_val:>19.1f}%")
-    print(f"{'After training':20} {after_train:>19.1f}% {after_val:>19.1f}%")
-    print("-" * 70)
+    print(f"  {'Before training':20} {before_train:>19.1f}% {before_val:>19.1f}%")
+    print(f"  {'After training':20} {after_train:>19.1f}% {after_val:>19.1f}%")
+    print("  " + "-" * 66)
 
-    # Improvement
     train_imp = after_train - before_train
     val_imp = after_val - before_val
-    print(f"{'Improvement':20} {train_imp:>+18.1f}% {val_imp:>+18.1f}%")
+    print(f"  {'Improvement':20} {train_imp:>+18.1f}% {val_imp:>+18.1f}%")
+
+    # Confusion matrices
+    print("\n" + "=" * 70)
+    print("  CONFUSION MATRICES")
     print("=" * 70)
+
+    print_confusion_matrix("Before Training - TRAIN", results.get('before_train', {}))
+    print_confusion_matrix("Before Training - VALIDATION", results.get('before_val', {}))
+    print_confusion_matrix("After Training - TRAIN", results.get('after_train', {}))
+    print_confusion_matrix("After Training - VALIDATION", results.get('after_val', {}))
+
+    print("\n" + "=" * 70)
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
