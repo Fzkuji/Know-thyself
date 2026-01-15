@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from src.data_loader import load_triviaqa
 from src.evaluator import is_correct, classify_ability
+from src.label_generator import SYSTEM_PROMPT
 
 
 class TrainedModelEvaluator:
@@ -43,7 +44,7 @@ class TrainedModelEvaluator:
         """Ask trained model to assess its ability to answer."""
         # Use chat template for instruction-tuned models
         messages = [
-            {"role": "system", "content": "Assess whether you can answer the question correctly. Output your judgment in \\boxed{}, using ONLY one word: yes (definitely correct), uncertain (likely correct but not sure), or no (unlikely correct)."},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"}
         ]
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
