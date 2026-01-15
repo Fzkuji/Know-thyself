@@ -144,6 +144,11 @@ def collect_responses_with_model(
         result["ability"] = ability
         results.append(result)
 
+    # Clean up GPU memory
+    del inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return results
 
 
@@ -226,6 +231,12 @@ def evaluate_judgment(
     # Distribution
     pred_dist = {a: sum(1 for r in results if r["predicted"] == a) for a in abilities}
     actual_dist = {a: sum(1 for r in results if r["actual"] == a) for a in abilities}
+
+    # Clean up GPU memory
+    del model
+    del tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return {
         "exact_match_rate": exact_match_rate,
@@ -400,6 +411,13 @@ def main():
         )
 
     print(f"Judgment model saved to {adapter_path}")
+
+    # Clean up training model before evaluation
+    del model
+    del tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print("Cleaned up training model from GPU memory")
 
     # Step 3.4: Final evaluation on both train and validation splits
     print("\n" + "=" * 60)
