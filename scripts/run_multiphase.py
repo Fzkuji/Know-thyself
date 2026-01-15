@@ -362,12 +362,22 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
     phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
     phase3_output = pipeline.get_phase_output_dir("phase3_judgment")
 
-    # Use merged model from Phase 2
-    base_model = phase2_output / "base_with_knowledge"
+    # Use knowledge model from Phase 2
+    # For LoRA: merged model at base_with_knowledge
+    # For full fine-tuning: model at knowledge
+    if args.no_lora:
+        # Full fine-tuning: model saved directly
+        base_model = phase2_output / "knowledge"
+    else:
+        # LoRA: use merged model
+        base_model = phase2_output / "base_with_knowledge"
+
     if not base_model.exists():
-        print(f"Warning: Merged model not found at {base_model}")
+        print(f"Warning: Knowledge model not found at {base_model}")
         print(f"Using original model: {args.model}")
         base_model = args.model
+    else:
+        print(f"Using knowledge model from: {base_model}")
 
     # Use Phase 1 responses as input
     input_path = phase1_output / "responses.jsonl"
