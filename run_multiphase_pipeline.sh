@@ -26,6 +26,7 @@ ADAPTIVE="true"
 MAX_STEPS_PER_SAMPLE=10
 FORCE="false"
 EXPERIMENT=""
+PHASE=""
 
 # Help function
 show_help() {
@@ -45,6 +46,7 @@ show_help() {
     echo "  --no_lora             Use full fine-tuning instead of LoRA"
     echo "  --no_adaptive         Disable adaptive training (use standard batch training)"
     echo "  --experiment          Experiment name (to resume or re-run specific experiment)"
+    echo "  --phase               Run specific phase only (1, 2, or 3)"
     echo "  --force               Force re-run even if phase already completed"
     echo "  --help                Show this help message"
     echo ""
@@ -116,6 +118,10 @@ while [[ $# -gt 0 ]]; do
             EXPERIMENT="$2"
             shift 2
             ;;
+        --phase)
+            PHASE="$2"
+            shift 2
+            ;;
         --force)
             FORCE="true"
             shift
@@ -169,6 +175,9 @@ if [ -n "$EXPERIMENT" ]; then
 else
     echo "(Experiment name will be auto-generated)"
 fi
+if [ -n "$PHASE" ]; then
+    echo "Phase: $PHASE only"
+fi
 if [ "$FORCE" = "true" ]; then
     echo "Force mode: ON (will re-run completed phases)"
 fi
@@ -201,6 +210,11 @@ fi
 # Add --experiment if specified
 if [ -n "$EXPERIMENT" ]; then
     CMD="$CMD --experiment $EXPERIMENT"
+fi
+
+# Add --phase if specified
+if [ -n "$PHASE" ]; then
+    CMD="$CMD --phase $PHASE"
 fi
 
 # Add --force if specified
