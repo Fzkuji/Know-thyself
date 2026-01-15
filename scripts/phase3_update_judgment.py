@@ -353,7 +353,8 @@ def main():
 
     # ===== Evaluate on TRAIN split =====
     print("\n--- Evaluation on TRAIN split (verify learning) ---")
-    train_test_samples = new_samples[:args.test_samples]
+    # Use all training samples for train evaluation (not test_samples)
+    train_test_samples = new_samples  # Evaluate on all trained samples
     train_dist = {}
     for s in train_test_samples:
         ability = s.get("ability", "unknown")

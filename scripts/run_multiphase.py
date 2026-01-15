@@ -207,7 +207,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
         "--model", args.model,
         "--lora_path", "none",  # No LoRA - baseline
-        "--num_samples", str(args.test_samples),
+        "--num_samples", str(args.num_samples),  # Use train samples (same as training)
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
@@ -265,7 +265,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         sys.executable, str(project_root / "scripts/step4_evaluate.py"),
         "--model", eval_model,
         "--lora_path", eval_lora,
-        "--num_samples", str(args.test_samples),
+        "--num_samples", str(args.num_samples),  # Use train samples (same as training)
         "--num_trials", str(args.num_trials),
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
