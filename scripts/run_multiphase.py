@@ -465,6 +465,8 @@ def main():
                         help="Resume from last checkpoint")
     parser.add_argument("--force", action="store_true",
                         help="Force re-run even if phase already completed")
+    parser.add_argument("--summary", action="store_true",
+                        help="Only print summary of existing experiment (no training)")
 
     # Data params
     parser.add_argument("--num_samples", type=int, default=1000,
@@ -493,6 +495,29 @@ def main():
 
     project_root = Path(__file__).resolve().parent.parent
     output_base = project_root / args.output_dir
+
+    # Handle --summary mode: just print existing experiment summary
+    if args.summary:
+        if args.experiment is None:
+            print("Error: --summary requires --experiment <name> to specify which experiment to summarize")
+            print("\nAvailable experiments:")
+            if output_base.exists():
+                for exp_dir in sorted(output_base.iterdir()):
+                    if exp_dir.is_dir() and (exp_dir / "pipeline_state.json").exists():
+                        print(f"  - {exp_dir.name}")
+            return
+
+        try:
+            pipeline = load_experiment(args.experiment, str(output_base))
+            pipeline.print_summary()
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            print("\nAvailable experiments:")
+            if output_base.exists():
+                for exp_dir in sorted(output_base.iterdir()):
+                    if exp_dir.is_dir() and (exp_dir / "pipeline_state.json").exists():
+                        print(f"  - {exp_dir.name}")
+        return
 
     # Auto-generate experiment name if not provided
     if args.experiment is None:

@@ -27,6 +27,7 @@ MAX_STEPS_PER_SAMPLE=10
 FORCE="false"
 EXPERIMENT=""
 PHASE=""
+SUMMARY="false"
 
 # Help function
 show_help() {
@@ -48,6 +49,7 @@ show_help() {
     echo "  --experiment          Experiment name (to resume or re-run specific experiment)"
     echo "  --phase               Run specific phase only (1, 2, or 3)"
     echo "  --force               Force re-run even if phase already completed"
+    echo "  --summary             Print summary of existing experiment (requires --experiment)"
     echo "  --help                Show this help message"
     echo ""
     echo "Training modes:"
@@ -60,6 +62,9 @@ show_help() {
     echo ""
     echo "  # Standard batch training with full fine-tuning"
     echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_lora --no_adaptive"
+    echo ""
+    echo "  # Print summary of existing experiment"
+    echo "  bash run_multiphase_pipeline.sh --summary --experiment Qwen2.5-7B_triviaqa_train1000_test100_0115_1430"
     exit 0
 }
 
@@ -126,6 +131,10 @@ while [[ $# -gt 0 ]]; do
             FORCE="true"
             shift
             ;;
+        --summary)
+            SUMMARY="true"
+            shift
+            ;;
         --help|-h)
             show_help
             ;;
@@ -147,6 +156,17 @@ else
 fi
 
 PROJECT_ROOT=$(dirname "$0")
+
+# Handle --summary mode: just print existing experiment summary
+if [ "$SUMMARY" = "true" ]; then
+    if [ -z "$EXPERIMENT" ]; then
+        echo "Error: --summary requires --experiment <name>"
+        echo "Usage: bash run_multiphase_pipeline.sh --summary --experiment <experiment_name>"
+        exit 1
+    fi
+    python $PROJECT_ROOT/scripts/run_multiphase.py --summary --experiment "$EXPERIMENT"
+    exit 0
+fi
 
 # Set training mode string
 if [ "$ADAPTIVE" = "true" ]; then
