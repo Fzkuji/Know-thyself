@@ -24,6 +24,8 @@ KNOWLEDGE_EPOCHS=10
 NUM_TRIALS=5
 ADAPTIVE="true"
 MAX_STEPS_PER_SAMPLE=10
+FORCE="false"
+EXPERIMENT=""
 
 # Help function
 show_help() {
@@ -42,6 +44,8 @@ show_help() {
     echo "  --max_steps           Max steps per sample in adaptive training (default: 10)"
     echo "  --no_lora             Use full fine-tuning instead of LoRA"
     echo "  --no_adaptive         Disable adaptive training (use standard batch training)"
+    echo "  --experiment          Experiment name (to resume or re-run specific experiment)"
+    echo "  --force               Force re-run even if phase already completed"
     echo "  --help                Show this help message"
     echo ""
     echo "Training modes:"
@@ -108,6 +112,14 @@ while [[ $# -gt 0 ]]; do
             ADAPTIVE="false"
             shift
             ;;
+        --experiment)
+            EXPERIMENT="$2"
+            shift 2
+            ;;
+        --force)
+            FORCE="true"
+            shift
+            ;;
         --help|-h)
             show_help
             ;;
@@ -152,7 +164,14 @@ echo "Max steps per sample: $MAX_STEPS_PER_SAMPLE"
 echo "Learning rate: $LR"
 echo "Epochs (judgment): $EPOCHS"
 echo "Epochs (knowledge): $KNOWLEDGE_EPOCHS"
-echo "(Experiment name will be auto-generated)"
+if [ -n "$EXPERIMENT" ]; then
+    echo "Experiment: $EXPERIMENT"
+else
+    echo "(Experiment name will be auto-generated)"
+fi
+if [ "$FORCE" = "true" ]; then
+    echo "Force mode: ON (will re-run completed phases)"
+fi
 echo "=============================================="
 
 # Build command
@@ -177,6 +196,16 @@ fi
 # Add --adaptive flag if enabled
 if [ "$ADAPTIVE" = "true" ]; then
     CMD="$CMD --adaptive"
+fi
+
+# Add --experiment if specified
+if [ -n "$EXPERIMENT" ]; then
+    CMD="$CMD --experiment $EXPERIMENT"
+fi
+
+# Add --force if specified
+if [ "$FORCE" = "true" ]; then
+    CMD="$CMD --force"
 fi
 
 # Run the command

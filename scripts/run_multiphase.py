@@ -165,6 +165,38 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
     return config
 
 
+def is_phase_completed(phase: int, pipeline: MultiPhasePipeline, args) -> bool:
+    """Check if a phase has already been completed."""
+    if phase == 1:
+        phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+        # Check if judgment_v1 model exists
+        if args.no_lora:
+            marker = phase_output / "judgment_v1" / "config.json"
+        else:
+            marker = phase_output / "judgment_v1" / "adapter_config.json"
+        return marker.exists()
+
+    elif phase == 2:
+        phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+        # Check if knowledge model exists (full fine-tuning or merged)
+        if args.no_lora:
+            marker = phase_output / "knowledge" / "config.json"
+        else:
+            marker = phase_output / "base_with_knowledge" / "config.json"
+        return marker.exists()
+
+    elif phase == 3:
+        phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+        # Check if judgment_v2 model exists
+        if args.no_lora:
+            marker = phase_output / "judgment_v2" / "config.json"
+        else:
+            marker = phase_output / "judgment_v2" / "adapter_config.json"
+        return marker.exists()
+
+    return False
+
+
 def run_phase1(args, pipeline: MultiPhasePipeline):
     """Run Phase 1: Initial judgment training (existing steps 1-4)."""
     print("\n" + "=" * 60)
@@ -431,6 +463,8 @@ def main():
                         help="Run specific phase (default: run all)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from last checkpoint")
+    parser.add_argument("--force", action="store_true",
+                        help="Force re-run even if phase already completed")
 
     # Data params
     parser.add_argument("--num_samples", type=int, default=1000,
@@ -515,9 +549,19 @@ def main():
         phases_to_run = [1, 2, 3]
 
     print(f"Phases to run: {phases_to_run}")
+    if args.force:
+        print("Force mode: will re-run all specified phases")
 
     # Execute phases
     for phase in phases_to_run:
+        # Check if phase already completed (unless --force)
+        if not args.force and is_phase_completed(phase, pipeline, args):
+            print(f"\n{'=' * 60}")
+            print(f"Phase {phase} already completed, skipping...")
+            print(f"(Use --force to re-run)")
+            print(f"{'=' * 60}")
+            continue
+
         if phase == 1:
             run_phase1(args, pipeline)
         elif phase == 2:
