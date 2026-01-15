@@ -166,22 +166,20 @@ class MultiPhasePipeline:
         self._print_comprehensive_summary(phase1, phase2, phase3)
 
     def _print_comprehensive_summary(self, phase1: dict, phase2: dict, phase3: dict):
-        """Print comprehensive cross-phase comparison."""
-        print("\n" + "=" * 80)
-        print("  CROSS-PHASE COMPARISON TABLE")
-        print("=" * 80)
+        """Print comprehensive cross-phase comparison with two tables."""
 
-        # Header
-        print(f"\n  {'Metric':<40} {'TRAIN':>15} {'VALIDATION':>15}")
+        # ===== TABLE 1: JUDGMENT ACCURACY =====
+        print("\n" + "=" * 80)
+        print("  TABLE 1: JUDGMENT ACCURACY (across all stages)")
+        print("=" * 80)
+        print(f"\n  {'Stage':<40} {'TRAIN':>15} {'VALIDATION':>15}")
         print("  " + "-" * 76)
 
-        # Phase 1: Judgment Training
+        # Collect judgment accuracy data
+        judgment_data = []
+
         if phase1.get('status') == 'completed':
             m1 = phase1.get('metrics', {})
-            print(f"\n  PHASE 1: Initial Judgment Training")
-            print("  " + "-" * 76)
-
-            # Get metrics from nested structure or flat structure
             before_train = m1.get('before_train', {})
             before_val = m1.get('before_val', {})
             after_train = m1.get('after_train', {})
@@ -192,120 +190,139 @@ class MultiPhasePipeline:
             at = after_train.get('exact_match_rate', 0) if isinstance(after_train, dict) else 0
             av = after_val.get('exact_match_rate', 0) if isinstance(after_val, dict) else 0
 
-            print(f"  {'Baseline Judgment Accuracy':<40} {bt:>14.1f}% {bv:>14.1f}%")
-            print(f"  {'After Judgment v1 Training':<40} {at:>14.1f}% {av:>14.1f}%")
-            print(f"  {'Improvement':<40} {at-bt:>+13.1f}% {av-bv:>+13.1f}%")
-        else:
-            print(f"\n  PHASE 1: [Not completed]")
+            judgment_data.append(('Baseline (pretrained)', bt, bv))
+            judgment_data.append(('After Phase 1 (Judgment v1)', at, av))
 
-        # Phase 2: Knowledge Learning
         if phase2.get('status') == 'completed':
-            m2 = phase2.get('metrics', {})
-            print(f"\n  PHASE 2: Knowledge Learning")
-            print("  " + "-" * 76)
+            # Phase 2 doesn't train judgment, so judgment accuracy may not change
+            # But we show the knowledge model's judgment baseline
+            judgment_data.append(('After Phase 2 (Knowledge)', '-', '-'))
 
-            bt = m2.get('train_before_accuracy', 0) * 100
-            bv = m2.get('val_before_accuracy', 0) * 100
-            at = m2.get('train_after_accuracy', 0) * 100
-            av = m2.get('val_after_accuracy', 0) * 100
-
-            print(f"  {'Baseline QA Accuracy':<40} {bt:>14.1f}% {bv:>14.1f}%")
-            print(f"  {'After Knowledge Training':<40} {at:>14.1f}% {av:>14.1f}%")
-            print(f"  {'Improvement':<40} {at-bt:>+13.1f}% {av-bv:>+13.1f}%")
-        else:
-            print(f"\n  PHASE 2: [Not completed]")
-
-        # Phase 3: Updated Judgment
         if phase3.get('status') == 'completed':
             m3 = phase3.get('metrics', {})
-            print(f"\n  PHASE 3: Updated Judgment (with Knowledge)")
-            print("  " + "-" * 76)
-
             bt = m3.get('train_before_exact_match', 0) * 100
             bv = m3.get('val_before_exact_match', 0) * 100
             at = m3.get('train_after_exact_match', 0) * 100
             av = m3.get('val_after_exact_match', 0) * 100
 
-            print(f"  {'Before Judgment v2 Training':<40} {bt:>14.1f}% {bv:>14.1f}%")
-            print(f"  {'After Judgment v2 Training':<40} {at:>14.1f}% {av:>14.1f}%")
-            print(f"  {'Improvement':<40} {at-bt:>+13.1f}% {av-bv:>+13.1f}%")
+            judgment_data.append(('Before Phase 3 (Knowledge only)', bt, bv))
+            judgment_data.append(('After Phase 3 (Judgment v2)', at, av))
 
-            # Show ability distribution change
+        for stage, train_acc, val_acc in judgment_data:
+            train_str = f'{train_acc:.1f}%' if isinstance(train_acc, (int, float)) else train_acc
+            val_str = f'{val_acc:.1f}%' if isinstance(val_acc, (int, float)) else val_acc
+            print(f"  {stage:<40} {train_str:>15} {val_str:>15}")
+
+        # ===== TABLE 2: QA ACCURACY =====
+        print("\n" + "=" * 80)
+        print("  TABLE 2: QA ACCURACY (across all stages)")
+        print("=" * 80)
+        print(f"\n  {'Stage':<40} {'TRAIN':>15} {'VALIDATION':>15}")
+        print("  " + "-" * 76)
+
+        # Collect QA accuracy data
+        qa_data = []
+
+        if phase1.get('status') == 'completed':
+            m1 = phase1.get('metrics', {})
+            before_train = m1.get('before_train', {})
+            before_val = m1.get('before_val', {})
+            after_train = m1.get('after_train', {})
+            after_val = m1.get('after_val', {})
+
+            # QA accuracy from phase 1 (if recorded)
+            bt_qa = before_train.get('qa_accuracy', '-') if isinstance(before_train, dict) else '-'
+            bv_qa = before_val.get('qa_accuracy', '-') if isinstance(before_val, dict) else '-'
+            at_qa = after_train.get('qa_accuracy', '-') if isinstance(after_train, dict) else '-'
+            av_qa = after_val.get('qa_accuracy', '-') if isinstance(after_val, dict) else '-'
+
+            qa_data.append(('Baseline (pretrained)', bt_qa, bv_qa))
+            qa_data.append(('After Phase 1 (Judgment v1)', at_qa, av_qa))
+
+        if phase2.get('status') == 'completed':
+            m2 = phase2.get('metrics', {})
+            bt = m2.get('train_before_accuracy', 0) * 100
+            bv = m2.get('val_before_accuracy', 0) * 100
+            at = m2.get('train_after_accuracy', 0) * 100
+            av = m2.get('val_after_accuracy', 0) * 100
+
+            qa_data.append(('Before Phase 2 (pre-Knowledge)', bt, bv))
+            qa_data.append(('After Phase 2 (Knowledge)', at, av))
+
+        if phase3.get('status') == 'completed':
+            m3 = phase3.get('metrics', {})
+            bt = m3.get('qa_train_before', '-')
+            bv = m3.get('qa_val_before', '-')
+            at = m3.get('qa_train_after', '-')
+            av = m3.get('qa_val_after', '-')
+
+            qa_data.append(('Before Phase 3 (Knowledge only)', bt, bv))
+            qa_data.append(('After Phase 3 (Judgment v2)', at, av))
+
+        for stage, train_acc, val_acc in qa_data:
+            train_str = f'{train_acc:.1f}%' if isinstance(train_acc, (int, float)) else str(train_acc)
+            val_str = f'{val_acc:.1f}%' if isinstance(val_acc, (int, float)) else str(val_acc)
+            print(f"  {stage:<40} {train_str:>15} {val_str:>15}")
+
+        # ===== ABILITY DISTRIBUTION (if Phase 3 completed) =====
+        if phase3.get('status') == 'completed':
+            m3 = phase3.get('metrics', {})
             orig_dist = m3.get('original_distribution', {})
             new_dist = m3.get('new_distribution', {})
             if orig_dist and new_dist:
-                print(f"\n  Ability Distribution Change (after knowledge learning):")
-                print(f"  {'':40} {'Before':>15} {'After':>15}")
+                print("\n" + "=" * 80)
+                print("  ABILITY DISTRIBUTION CHANGE (after knowledge learning)")
+                print("=" * 80)
+                print(f"\n  {'Ability':<40} {'Before':>15} {'After':>15}")
                 print("  " + "-" * 76)
                 for ability in ['can', 'uncertain', 'cannot']:
                     orig = orig_dist.get(ability, 0)
                     new = new_dist.get(ability, 0)
                     print(f"  {ability:<40} {orig:>15} {new:>15}")
-        else:
-            print(f"\n  PHASE 3: [Not completed]")
 
-        # Print overall progression summary
-        print("\n" + "=" * 80)
-        print("  OVERALL PROGRESSION (VALIDATION SPLIT)")
-        print("=" * 80)
-
-        # Collect key metrics across phases
-        progression = []
-
-        # Baseline
-        if phase1.get('status') == 'completed':
-            m1 = phase1.get('metrics', {})
-            before_val = m1.get('before_val', {})
-            baseline_judgment = before_val.get('exact_match_rate', 0) if isinstance(before_val, dict) else 0
-            progression.append(('Baseline (no training)', baseline_judgment, '-'))
-
-            after_val = m1.get('after_val', {})
-            p1_judgment = after_val.get('exact_match_rate', 0) if isinstance(after_val, dict) else 0
-            progression.append(('After Phase 1 (Judgment v1)', p1_judgment, '-'))
-
-        if phase2.get('status') == 'completed':
-            m2 = phase2.get('metrics', {})
-            p2_qa = m2.get('val_after_accuracy', 0) * 100
-            progression.append(('After Phase 2 (Knowledge)', '-', f'{p2_qa:.1f}%'))
-
-        if phase3.get('status') == 'completed':
-            m3 = phase3.get('metrics', {})
-            p3_judgment = m3.get('val_after_exact_match', 0) * 100
-            progression.append(('After Phase 3 (Judgment v2)', p3_judgment, '-'))
-
-        if progression:
-            print(f"\n  {'Stage':<40} {'Judgment Acc':>15} {'QA Acc':>15}")
-            print("  " + "-" * 76)
-            for stage, judgment, qa in progression:
-                judgment_str = f'{judgment:.1f}%' if isinstance(judgment, (int, float)) else judgment
-                print(f"  {stage:<40} {judgment_str:>15} {qa:>15}")
-
-        # Key insight
+        # ===== KEY INSIGHTS =====
         print("\n" + "=" * 80)
         print("  KEY INSIGHTS")
         print("=" * 80)
 
-        if phase1.get('status') == 'completed' and phase3.get('status') == 'completed':
+        # Judgment improvement
+        if phase1.get('status') == 'completed':
             m1 = phase1.get('metrics', {})
-            m3 = phase3.get('metrics', {})
-
-            # Get baseline and final judgment accuracy
             before_val = m1.get('before_val', {})
-            baseline = before_val.get('exact_match_rate', 0) if isinstance(before_val, dict) else 0
-            final = m3.get('val_after_exact_match', 0) * 100
+            baseline_judgment = before_val.get('exact_match_rate', 0) if isinstance(before_val, dict) else 0
 
-            total_improvement = final - baseline
-            print(f"\n  Total Judgment Accuracy Improvement (Validation):")
-            print(f"    Baseline → Final: {baseline:.1f}% → {final:.1f}% ({total_improvement:+.1f}%)")
+            if phase3.get('status') == 'completed':
+                m3 = phase3.get('metrics', {})
+                final_judgment = m3.get('val_after_exact_match', 0) * 100
+                total_improvement = final_judgment - baseline_judgment
+                print(f"\n  Judgment Accuracy (Validation):")
+                print(f"    Baseline → Final: {baseline_judgment:.1f}% → {final_judgment:.1f}% ({total_improvement:+.1f}%)")
+            else:
+                after_val = m1.get('after_val', {})
+                p1_judgment = after_val.get('exact_match_rate', 0) if isinstance(after_val, dict) else 0
+                p1_improvement = p1_judgment - baseline_judgment
+                print(f"\n  Judgment Accuracy (Validation after Phase 1):")
+                print(f"    Baseline → After P1: {baseline_judgment:.1f}% → {p1_judgment:.1f}% ({p1_improvement:+.1f}%)")
 
-            # Check if model became more confident
+        # QA improvement
+        if phase2.get('status') == 'completed':
+            m2 = phase2.get('metrics', {})
+            qa_before = m2.get('val_before_accuracy', 0) * 100
+            qa_after = m2.get('val_after_accuracy', 0) * 100
+            qa_improvement = qa_after - qa_before
+            print(f"\n  QA Accuracy (Validation after Phase 2):")
+            print(f"    Before → After: {qa_before:.1f}% → {qa_after:.1f}% ({qa_improvement:+.1f}%)")
+
+        # Model confidence
+        if phase3.get('status') == 'completed':
+            m3 = phase3.get('metrics', {})
             orig_dist = m3.get('original_distribution', {})
             new_dist = m3.get('new_distribution', {})
             if orig_dist and new_dist:
                 orig_can = orig_dist.get('can', 0)
                 new_can = new_dist.get('can', 0)
                 if new_can > orig_can:
-                    print(f"\n  Model became more confident:")
+                    print(f"\n  Model Confidence Change:")
                     print(f"    'can' answers: {orig_can} → {new_can} (+{new_can - orig_can})")
 
         print("\n" + "=" * 80)

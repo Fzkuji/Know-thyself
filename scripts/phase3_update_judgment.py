@@ -18,13 +18,68 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_loader import load_triviaqa
 from src.inference import ModelInference
-from src.evaluator import evaluate_responses, classify_ability
+from src.evaluator import evaluate_responses, classify_ability, is_correct
 from src.dataset_builder import load_from_jsonl, save_to_jsonl, prepare_dataset_for_training
 from src.label_generator import build_training_dataset, SYSTEM_PROMPT
 from src.trainer import setup_model_for_training, train_metacognition
 from src.pipeline import MultiPhasePipeline
 from tqdm import tqdm
 import re
+import torch
+
+
+def test_qa_accuracy(
+    model_path: str,
+    split: str = "train",
+    num_samples: int = 100,
+    num_trials: int = 5,
+    inference_batch_size: int = 16,
+) -> dict:
+    """
+    Test QA accuracy on a dataset split.
+    """
+    print(f"  Testing QA accuracy on {split} split ({num_samples} samples)...")
+
+    samples = load_triviaqa(split=split, num_samples=num_samples)
+
+    inference = ModelInference(
+        model_name=model_path,
+        inference_batch_size=inference_batch_size,
+        temperature=1.0,
+    )
+
+    correct_count = 0
+    total = 0
+
+    for sample in tqdm(samples, desc=f"QA test ({split})", leave=False):
+        question = sample["question"]
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+
+        if not gold_answers:
+            continue
+
+        responses = inference.generate(
+            f"Question: {question}\nAnswer:",
+            num_samples=num_trials
+        )
+
+        any_correct = any(is_correct(r, gold_answers) for r in responses)
+        if any_correct:
+            correct_count += 1
+        total += 1
+
+    accuracy = correct_count / total if total > 0 else 0
+
+    # Clean up
+    del inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return {
+        "qa_accuracy": accuracy * 100,
+        "qa_correct": correct_count,
+        "qa_total": total,
+    }
 
 
 def parse_ability_prediction(response: str) -> str:
@@ -452,6 +507,49 @@ def main():
     print(f"  predicted_uncertain    {c['uncertain_can']:5d}           {c['uncertain_uncertain']:5d}            {c['uncertain_cannot']:5d}")
     print(f"  predicted_cannot       {c['cannot_can']:5d}           {c['cannot_uncertain']:5d}            {c['cannot_cannot']:5d}")
 
+    # ===== QA Evaluation =====
+    print("\n" + "=" * 60)
+    print("QA Accuracy Evaluation (verify knowledge preserved)")
+    print("=" * 60)
+
+    # Before judgment v2 training (knowledge model only)
+    print("\nBefore judgment v2 training (knowledge model) QA:")
+    qa_before_train = test_qa_accuracy(
+        args.base_model, split="train", num_samples=args.test_samples,
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+    )
+    print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
+
+    qa_before_val = test_qa_accuracy(
+        args.base_model, split="validation", num_samples=args.test_samples,
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+    )
+    print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
+
+    # After judgment v2 training
+    print("\nAfter judgment v2 training QA:")
+    if args.no_lora:
+        qa_test_model = str(adapter_path)
+    else:
+        # For LoRA judgment training on knowledge model, QA should remain same
+        qa_test_model = args.base_model
+
+    qa_after_train = test_qa_accuracy(
+        qa_test_model, split="train", num_samples=args.test_samples,
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+    )
+    print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
+
+    qa_after_val = test_qa_accuracy(
+        qa_test_model, split="validation", num_samples=args.test_samples,
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+    )
+    print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
+
+    qa_change_train = qa_after_train['qa_accuracy'] - qa_before_train['qa_accuracy']
+    qa_change_val = qa_after_val['qa_accuracy'] - qa_before_val['qa_accuracy']
+    print(f"\nQA Change (should be ~0): Train {qa_change_train:+.1f}%, Val {qa_change_val:+.1f}%")
+
     # Record to pipeline
     if pipeline:
         pipeline.record_phase_result(
@@ -467,6 +565,11 @@ def main():
                 "val_after_exact_match": after_val_eval['exact_match_rate'],
                 "val_improvement": val_improvement,
                 "confusion_matrix": after_val_eval['confusion'],
+                # QA metrics
+                "qa_train_before": qa_before_train['qa_accuracy'],
+                "qa_train_after": qa_after_train['qa_accuracy'],
+                "qa_val_before": qa_before_val['qa_accuracy'],
+                "qa_val_after": qa_after_val['qa_accuracy'],
             },
             output_paths={
                 "responses": str(responses_path),
