@@ -197,156 +197,173 @@ class MultiPhasePipeline:
         """Generate comprehensive cross-phase comparison as lines."""
         lines = []
 
-        # ===== TABLE 1: JUDGMENT ACCURACY =====
-        lines.append("")
-        lines.append("=" * 80)
-        lines.append("  TABLE 1: JUDGMENT ACCURACY (across all stages)")
-        lines.append("=" * 80)
-        lines.append(f"  {'Stage':<40} {'TRAIN':>15} {'VALIDATION':>15}")
-        lines.append("  " + "-" * 76)
+        # Helper function to format percentage
+        def fmt_pct(val):
+            if isinstance(val, (int, float)):
+                return f'{val:.1f}%'
+            return str(val) if val else '-'
 
-        # Collect judgment accuracy data
-        judgment_data = []
+        # Helper function to format confusion matrix
+        def fmt_confusion_matrix(metrics: dict, indent: str = "    "):
+            cm_lines = []
+            cm_lines.append(f"{indent}{'':20} {'actual_can':>12} {'actual_unc':>12} {'actual_cannot':>14}")
+            cm_lines.append(f"{indent}predicted_can      {metrics.get('cm_can_can', 0):>12} {metrics.get('cm_can_uncertain', 0):>12} {metrics.get('cm_can_cannot', 0):>14}")
+            cm_lines.append(f"{indent}predicted_uncertain{metrics.get('cm_uncertain_can', 0):>12} {metrics.get('cm_uncertain_uncertain', 0):>12} {metrics.get('cm_uncertain_cannot', 0):>14}")
+            cm_lines.append(f"{indent}predicted_cannot   {metrics.get('cm_cannot_can', 0):>12} {metrics.get('cm_cannot_uncertain', 0):>12} {metrics.get('cm_cannot_cannot', 0):>14}")
+            return cm_lines
 
+        # ============================================================
+        # STAGE 0: Pretrained Baseline
+        # ============================================================
         if phase1.get('status') == 'completed':
             m1 = phase1.get('metrics', {})
-            before_train = m1.get('before_train', {})
-            before_val = m1.get('before_val', {})
-            after_train = m1.get('after_train', {})
-            after_val = m1.get('after_val', {})
+            before_val = m1.get('before_val', {}) if isinstance(m1.get('before_val'), dict) else {}
 
-            bt = before_train.get('exact_match_rate', 0) if isinstance(before_train, dict) else 0
-            bv = before_val.get('exact_match_rate', 0) if isinstance(before_val, dict) else 0
-            at = after_train.get('exact_match_rate', 0) if isinstance(after_train, dict) else 0
-            av = after_val.get('exact_match_rate', 0) if isinstance(after_val, dict) else 0
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("  [0] PRETRAINED BASELINE (预训练基线)")
+            lines.append("=" * 80)
 
-            judgment_data.append(('Baseline (pretrained)', bt, bv))
-            judgment_data.append(('After Phase 1 (Judgment v1)', at, av))
+            baseline_qa = before_val.get('qa_accuracy', '-')
+            baseline_jud = before_val.get('exact_match_rate', 0)
 
-        if phase2.get('status') == 'completed':
-            judgment_data.append(('After Phase 2 (Knowledge)', '-', '-'))
+            lines.append(f"  QA Accuracy (Val):       {fmt_pct(baseline_qa)}")
+            lines.append(f"  Judgment Accuracy (Val): {fmt_pct(baseline_jud)}")
 
-        if phase3.get('status') == 'completed':
-            m3 = phase3.get('metrics', {})
-            bt = m3.get('train_before_exact_match', 0) * 100
-            bv = m3.get('val_before_exact_match', 0) * 100
-            at = m3.get('train_after_exact_match', 0) * 100
-            av = m3.get('val_after_exact_match', 0) * 100
+            # Confusion matrix
+            if before_val.get('cm_can_can') is not None:
+                lines.append("")
+                lines.append("  Confusion Matrix (Validation):")
+                lines.extend(fmt_confusion_matrix(before_val))
 
-            judgment_data.append(('Before Phase 3 (Knowledge only)', bt, bv))
-            judgment_data.append(('After Phase 3 (Judgment v2)', at, av))
-
-        for stage, train_acc, val_acc in judgment_data:
-            train_str = f'{train_acc:.1f}%' if isinstance(train_acc, (int, float)) else train_acc
-            val_str = f'{val_acc:.1f}%' if isinstance(val_acc, (int, float)) else val_acc
-            lines.append(f"  {stage:<40} {train_str:>15} {val_str:>15}")
-
-        # ===== TABLE 2: QA ACCURACY =====
-        lines.append("")
-        lines.append("=" * 80)
-        lines.append("  TABLE 2: QA ACCURACY (across all stages)")
-        lines.append("=" * 80)
-        lines.append(f"  {'Stage':<40} {'TRAIN':>15} {'VALIDATION':>15}")
-        lines.append("  " + "-" * 76)
-
-        # Collect QA accuracy data
-        qa_data = []
-
+        # ============================================================
+        # STAGE 1: After Phase 1 (Judgment v1)
+        # ============================================================
         if phase1.get('status') == 'completed':
             m1 = phase1.get('metrics', {})
-            before_train = m1.get('before_train', {})
-            before_val = m1.get('before_val', {})
-            after_train = m1.get('after_train', {})
-            after_val = m1.get('after_val', {})
+            after_val = m1.get('after_val', {}) if isinstance(m1.get('after_val'), dict) else {}
+            before_val = m1.get('before_val', {}) if isinstance(m1.get('before_val'), dict) else {}
 
-            bt_qa = before_train.get('qa_accuracy', '-') if isinstance(before_train, dict) else '-'
-            bv_qa = before_val.get('qa_accuracy', '-') if isinstance(before_val, dict) else '-'
-            at_qa = after_train.get('qa_accuracy', '-') if isinstance(after_train, dict) else '-'
-            av_qa = after_val.get('qa_accuracy', '-') if isinstance(after_val, dict) else '-'
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("  [1] AFTER PHASE 1: Judgment v1 (判断能力 v1)")
+            lines.append("=" * 80)
 
-            qa_data.append(('Baseline (pretrained)', bt_qa, bv_qa))
-            qa_data.append(('After Phase 1 (Judgment v1)', at_qa, av_qa))
+            p1_qa = after_val.get('qa_accuracy', '-')
+            p1_jud = after_val.get('exact_match_rate', 0)
+            baseline_jud = before_val.get('exact_match_rate', 0)
+            jud_imp = p1_jud - baseline_jud if isinstance(p1_jud, (int, float)) and isinstance(baseline_jud, (int, float)) else 0
 
+            lines.append(f"  QA Accuracy (Val):       {fmt_pct(p1_qa)}")
+            lines.append(f"  Judgment Accuracy (Val): {fmt_pct(p1_jud)} ({jud_imp:+.1f}% from baseline)")
+
+            # Confusion matrix
+            if after_val.get('cm_can_can') is not None:
+                lines.append("")
+                lines.append("  Confusion Matrix (Validation):")
+                lines.extend(fmt_confusion_matrix(after_val))
+
+        # ============================================================
+        # STAGE 2: After Phase 2 (Knowledge)
+        # ============================================================
         if phase2.get('status') == 'completed':
             m2 = phase2.get('metrics', {})
-            bt = m2.get('train_before_accuracy', 0) * 100
-            bv = m2.get('val_before_accuracy', 0) * 100
-            at = m2.get('train_after_accuracy', 0) * 100
-            av = m2.get('val_after_accuracy', 0) * 100
 
-            qa_data.append(('Before Phase 2 (pre-Knowledge)', bt, bv))
-            qa_data.append(('After Phase 2 (Knowledge)', at, av))
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("  [2] AFTER PHASE 2: Knowledge (知识学习)")
+            lines.append("=" * 80)
 
+            qa_before = m2.get('val_before_accuracy', 0) * 100
+            qa_after = m2.get('val_after_accuracy', 0) * 100
+            qa_imp = qa_after - qa_before
+
+            lines.append(f"  QA Accuracy (Val):       {fmt_pct(qa_after)} ({qa_imp:+.1f}% from before)")
+            lines.append(f"  Judgment Accuracy (Val): (not evaluated - knowledge only)")
+            lines.append("")
+            lines.append(f"  Training samples: {m2.get('qa_samples', 'N/A')}")
+
+        # ============================================================
+        # STAGE 3: After Phase 3 (Judgment v2)
+        # ============================================================
         if phase3.get('status') == 'completed':
             m3 = phase3.get('metrics', {})
-            bt = m3.get('qa_train_before', '-')
-            bv = m3.get('qa_val_before', '-')
-            at = m3.get('qa_train_after', '-')
-            av = m3.get('qa_val_after', '-')
 
-            qa_data.append(('Before Phase 3 (Knowledge only)', bt, bv))
-            qa_data.append(('After Phase 3 (Judgment v2)', at, av))
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("  [3] AFTER PHASE 3: Judgment v2 (判断能力 v2 - Final)")
+            lines.append("=" * 80)
 
-        for stage, train_acc, val_acc in qa_data:
-            train_str = f'{train_acc:.1f}%' if isinstance(train_acc, (int, float)) else str(train_acc)
-            val_str = f'{val_acc:.1f}%' if isinstance(val_acc, (int, float)) else str(val_acc)
-            lines.append(f"  {stage:<40} {train_str:>15} {val_str:>15}")
+            p3_qa = m3.get('qa_val_after', '-')
+            p3_jud = m3.get('val_after_exact_match', 0) * 100
 
-        # ===== ABILITY DISTRIBUTION (if Phase 3 completed) =====
-        if phase3.get('status') == 'completed':
-            m3 = phase3.get('metrics', {})
+            # Get baseline for comparison
+            baseline_jud = 0
+            if phase1.get('status') == 'completed':
+                m1 = phase1.get('metrics', {})
+                before_val = m1.get('before_val', {}) if isinstance(m1.get('before_val'), dict) else {}
+                baseline_jud = before_val.get('exact_match_rate', 0)
+
+            total_jud_imp = p3_jud - baseline_jud
+
+            lines.append(f"  QA Accuracy (Val):       {fmt_pct(p3_qa)}")
+            lines.append(f"  Judgment Accuracy (Val): {fmt_pct(p3_jud)} ({total_jud_imp:+.1f}% from baseline)")
+
+            # Ability distribution change
             orig_dist = m3.get('original_distribution', {})
             new_dist = m3.get('new_distribution', {})
-            if orig_dist and new_dist:
+            if orig_dist or new_dist:
                 lines.append("")
-                lines.append("=" * 80)
-                lines.append("  ABILITY DISTRIBUTION CHANGE (after knowledge learning)")
-                lines.append("=" * 80)
-                lines.append(f"  {'Ability':<40} {'Before':>15} {'After':>15}")
-                lines.append("  " + "-" * 76)
+                lines.append("  Ability Distribution Change (after knowledge learning):")
+                lines.append(f"    {'Ability':<15} {'Before':>10} {'After':>10} {'Change':>10}")
+                lines.append("    " + "-" * 50)
                 for ability in ['can', 'uncertain', 'cannot']:
                     orig = orig_dist.get(ability, 0)
                     new = new_dist.get(ability, 0)
-                    lines.append(f"  {ability:<40} {orig:>15} {new:>15}")
+                    change = new - orig
+                    lines.append(f"    {ability:<15} {orig:>10} {new:>10} {change:>+10}")
 
-        # ===== KEY INSIGHTS =====
+            # Confusion matrix (if available)
+            # Note: Phase 3 metrics may store confusion matrix differently
+            # We'll check for the standard keys
+            val_after = m3.get('val_after', {}) if isinstance(m3.get('val_after'), dict) else {}
+            if val_after.get('cm_can_can') is not None:
+                lines.append("")
+                lines.append("  Confusion Matrix (Validation):")
+                lines.extend(fmt_confusion_matrix(val_after))
+
+        # ============================================================
+        # KEY IMPROVEMENTS SUMMARY
+        # ============================================================
         lines.append("")
         lines.append("=" * 80)
-        lines.append("  KEY INSIGHTS")
+        lines.append("  KEY IMPROVEMENTS (关键提升)")
         lines.append("=" * 80)
 
-        # Judgment improvement
         if phase1.get('status') == 'completed':
             m1 = phase1.get('metrics', {})
-            before_val = m1.get('before_val', {})
-            baseline_judgment = before_val.get('exact_match_rate', 0) if isinstance(before_val, dict) else 0
+            before_val = m1.get('before_val', {}) if isinstance(m1.get('before_val'), dict) else {}
+            baseline_jud = before_val.get('exact_match_rate', 0)
+            baseline_qa = before_val.get('qa_accuracy', '-')
 
             if phase3.get('status') == 'completed':
                 m3 = phase3.get('metrics', {})
-                final_judgment = m3.get('val_after_exact_match', 0) * 100
-                total_improvement = final_judgment - baseline_judgment
-                lines.append("")
-                lines.append("  Judgment Accuracy (Validation):")
-                lines.append(f"    Baseline → Final: {baseline_judgment:.1f}% → {final_judgment:.1f}% ({total_improvement:+.1f}%)")
+                final_jud = m3.get('val_after_exact_match', 0) * 100
+                total_jud_imp = final_jud - baseline_jud
+                lines.append(f"  Judgment: {baseline_jud:.1f}% → {final_jud:.1f}% ({total_jud_imp:+.1f}%)")
             else:
-                after_val = m1.get('after_val', {})
-                p1_judgment = after_val.get('exact_match_rate', 0) if isinstance(after_val, dict) else 0
-                p1_improvement = p1_judgment - baseline_judgment
-                lines.append("")
-                lines.append("  Judgment Accuracy (Validation after Phase 1):")
-                lines.append(f"    Baseline → After P1: {baseline_judgment:.1f}% → {p1_judgment:.1f}% ({p1_improvement:+.1f}%)")
+                after_val = m1.get('after_val', {}) if isinstance(m1.get('after_val'), dict) else {}
+                p1_jud = after_val.get('exact_match_rate', 0)
+                p1_imp = p1_jud - baseline_jud
+                lines.append(f"  Judgment: {baseline_jud:.1f}% → {p1_jud:.1f}% ({p1_imp:+.1f}%)")
 
-        # QA improvement
         if phase2.get('status') == 'completed':
             m2 = phase2.get('metrics', {})
             qa_before = m2.get('val_before_accuracy', 0) * 100
             qa_after = m2.get('val_after_accuracy', 0) * 100
-            qa_improvement = qa_after - qa_before
-            lines.append("")
-            lines.append("  QA Accuracy (Validation after Phase 2):")
-            lines.append(f"    Before → After: {qa_before:.1f}% → {qa_after:.1f}% ({qa_improvement:+.1f}%)")
+            qa_imp = qa_after - qa_before
+            lines.append(f"  QA Knowledge: {qa_before:.1f}% → {qa_after:.1f}% ({qa_imp:+.1f}%)")
 
-        # Model confidence
         if phase3.get('status') == 'completed':
             m3 = phase3.get('metrics', {})
             orig_dist = m3.get('original_distribution', {})
@@ -354,10 +371,7 @@ class MultiPhasePipeline:
             if orig_dist and new_dist:
                 orig_can = orig_dist.get('can', 0)
                 new_can = new_dist.get('can', 0)
-                if new_can > orig_can:
-                    lines.append("")
-                    lines.append("  Model Confidence Change:")
-                    lines.append(f"    'can' answers: {orig_can} → {new_can} (+{new_can - orig_can})")
+                lines.append(f"  Confidence ('can' count): {orig_can} → {new_can} ({new_can - orig_can:+d})")
 
         lines.append("")
         lines.append("=" * 80)

@@ -29,6 +29,7 @@ EXPERIMENT=""
 PHASE=""
 SUMMARY="false"
 NUM_GPUS=""
+DDP="false"
 
 # Help function
 show_help() {
@@ -52,9 +53,14 @@ show_help() {
     echo "  --force               Force re-run even if phase already completed"
     echo "  --summary             Print summary of existing experiment (requires --experiment)"
     echo "  --num_gpus N          Number of GPUs to use for inference (default: all available)"
+    echo "  --ddp                 Use DDP for multi-GPU training (gradient sync across GPUs)"
     echo "  --help                Show this help message"
     echo ""
     echo "Training modes:"
+    echo "  - Single GPU training + Multi-GPU inference (default)"
+    echo "  - DDP training + Multi-GPU inference (use --ddp)"
+    echo ""
+    echo "Fine-tuning modes:"
     echo "  - Adaptive (default): Train each sample until learned"
     echo "  - Standard: Fixed epochs with batch training (use --no_adaptive)"
     echo ""
@@ -64,6 +70,9 @@ show_help() {
     echo ""
     echo "  # Standard batch training with full fine-tuning"
     echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_lora --no_adaptive"
+    echo ""
+    echo "  # DDP training with full fine-tuning (multi-GPU gradient sync)"
+    echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_lora --ddp"
     echo ""
     echo "  # Print summary of existing experiment"
     echo "  bash run_multiphase_pipeline.sh --summary --experiment Qwen2.5-7B_triviaqa_train1000_test100_0115_1430"
@@ -141,6 +150,10 @@ while [[ $# -gt 0 ]]; do
             NUM_GPUS="$2"
             shift 2
             ;;
+        --ddp)
+            DDP="true"
+            shift
+            ;;
         --help|-h)
             show_help
             ;;
@@ -212,21 +225,49 @@ if [ -n "$NUM_GPUS" ]; then
 else
     echo "Number of GPUs: all available (auto-detect)"
 fi
+if [ "$DDP" = "true" ]; then
+    echo "DDP Training: ON (multi-GPU gradient sync)"
+else
+    echo "DDP Training: OFF (single-GPU training + multi-GPU inference)"
+fi
 echo "=============================================="
 
-# Build command
-CMD="python $PROJECT_ROOT/scripts/run_multiphase.py \
-    --model $MODEL \
-    --dataset $DATASET \
-    --num_samples $TRAIN_SAMPLES \
-    --test_samples $TEST_SAMPLES \
-    --num_trials $NUM_TRIALS \
-    --inference_batch_size $INFERENCE_BATCH_SIZE \
-    --epochs $EPOCHS \
-    --knowledge_epochs $KNOWLEDGE_EPOCHS \
-    --batch_size $TRAIN_BATCH_SIZE \
-    --lr $LR \
-    --max_steps_per_sample $MAX_STEPS_PER_SAMPLE"
+# Build command based on DDP mode
+if [ "$DDP" = "true" ]; then
+    # Determine number of GPUs for torchrun
+    if [ -n "$NUM_GPUS" ]; then
+        NPROC=$NUM_GPUS
+    else
+        # Auto-detect available GPUs
+        NPROC=$(python -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "1")
+    fi
+    echo "Launching with torchrun (nproc_per_node=$NPROC)..."
+    CMD="torchrun --nproc_per_node=$NPROC $PROJECT_ROOT/scripts/run_multiphase_ddp.py \
+        --model $MODEL \
+        --dataset $DATASET \
+        --num_samples $TRAIN_SAMPLES \
+        --test_samples $TEST_SAMPLES \
+        --num_trials $NUM_TRIALS \
+        --inference_batch_size $INFERENCE_BATCH_SIZE \
+        --epochs $EPOCHS \
+        --knowledge_epochs $KNOWLEDGE_EPOCHS \
+        --batch_size $TRAIN_BATCH_SIZE \
+        --lr $LR \
+        --max_steps_per_sample $MAX_STEPS_PER_SAMPLE"
+else
+    CMD="python $PROJECT_ROOT/scripts/run_multiphase.py \
+        --model $MODEL \
+        --dataset $DATASET \
+        --num_samples $TRAIN_SAMPLES \
+        --test_samples $TEST_SAMPLES \
+        --num_trials $NUM_TRIALS \
+        --inference_batch_size $INFERENCE_BATCH_SIZE \
+        --epochs $EPOCHS \
+        --knowledge_epochs $KNOWLEDGE_EPOCHS \
+        --batch_size $TRAIN_BATCH_SIZE \
+        --lr $LR \
+        --max_steps_per_sample $MAX_STEPS_PER_SAMPLE"
+fi
 
 # Add --no_lora flag if full fine-tuning
 if [ "$NO_LORA" = "true" ]; then

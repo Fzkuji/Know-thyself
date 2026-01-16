@@ -204,27 +204,45 @@ def print_phase_summary(title: str, results: dict):
     print(f"  {title}")
     print("=" * 70)
 
-    # Exact match rates summary
-    print(f"\n  EXACT MATCH ACCURACY")
+    # TABLE 1: QA ACCURACY (回答能力)
+    print(f"\n  TABLE 1: QA ACCURACY (回答能力)")
     print(f"  {'':20} {'TRAIN':>20} {'VALIDATION':>20}")
     print("  " + "-" * 66)
 
-    before_train = results.get('before_train', {}).get('exact_match_rate', 0)
-    before_val = results.get('before_val', {}).get('exact_match_rate', 0)
-    after_train = results.get('after_train', {}).get('exact_match_rate', 0)
-    after_val = results.get('after_val', {}).get('exact_match_rate', 0)
+    qa_before_train = results.get('before_train', {}).get('qa_accuracy', 0)
+    qa_before_val = results.get('before_val', {}).get('qa_accuracy', 0)
+    qa_after_train = results.get('after_train', {}).get('qa_accuracy', 0)
+    qa_after_val = results.get('after_val', {}).get('qa_accuracy', 0)
 
-    print(f"  {'Before training':20} {before_train:>19.1f}% {before_val:>19.1f}%")
-    print(f"  {'After training':20} {after_train:>19.1f}% {after_val:>19.1f}%")
+    print(f"  {'Before training':20} {qa_before_train:>19.1f}% {qa_before_val:>19.1f}%")
+    print(f"  {'After training':20} {qa_after_train:>19.1f}% {qa_after_val:>19.1f}%")
     print("  " + "-" * 66)
 
-    train_imp = after_train - before_train
-    val_imp = after_val - before_val
-    print(f"  {'Improvement':20} {train_imp:>+18.1f}% {val_imp:>+18.1f}%")
+    qa_train_imp = qa_after_train - qa_before_train
+    qa_val_imp = qa_after_val - qa_before_val
+    print(f"  {'Improvement':20} {qa_train_imp:>+18.1f}% {qa_val_imp:>+18.1f}%")
+
+    # TABLE 2: JUDGMENT ACCURACY (判断能力)
+    print(f"\n  TABLE 2: JUDGMENT ACCURACY (判断能力)")
+    print(f"  {'':20} {'TRAIN':>20} {'VALIDATION':>20}")
+    print("  " + "-" * 66)
+
+    jud_before_train = results.get('before_train', {}).get('exact_match_rate', 0)
+    jud_before_val = results.get('before_val', {}).get('exact_match_rate', 0)
+    jud_after_train = results.get('after_train', {}).get('exact_match_rate', 0)
+    jud_after_val = results.get('after_val', {}).get('exact_match_rate', 0)
+
+    print(f"  {'Before training':20} {jud_before_train:>19.1f}% {jud_before_val:>19.1f}%")
+    print(f"  {'After training':20} {jud_after_train:>19.1f}% {jud_after_val:>19.1f}%")
+    print("  " + "-" * 66)
+
+    jud_train_imp = jud_after_train - jud_before_train
+    jud_val_imp = jud_after_val - jud_before_val
+    print(f"  {'Improvement':20} {jud_train_imp:>+18.1f}% {jud_val_imp:>+18.1f}%")
 
     # Confusion matrices
     print("\n" + "=" * 70)
-    print("  CONFUSION MATRICES")
+    print("  CONFUSION MATRICES (Judgment)")
     print("=" * 70)
 
     print_confusion_matrix("Before Training - TRAIN", results.get('before_train', {}))
@@ -536,6 +554,8 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         # Only train samples the model doesn't already know
         "--filter_ability", "cannot", "uncertain",
         "--skip_correct",
+        # Pass experiment name for metrics saving
+        "--experiment", pipeline.experiment_name,
     ]
     if args.no_lora:
         cmd.append("--no_lora")
@@ -599,6 +619,8 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         "--lr", str(args.lr),
         "--max_steps_per_sample", str(args.max_steps_per_sample),
         "--skip_correct",  # Skip samples already judged correctly
+        # Pass experiment name for metrics saving
+        "--experiment", pipeline.experiment_name,
     ]
     if args.no_lora:
         cmd.append("--no_lora")

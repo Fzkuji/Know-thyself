@@ -673,6 +673,21 @@ def main():
 
     # Record to pipeline
     if pipeline:
+        # Build val_after dict with confusion matrix in expected format (cm_ prefix)
+        confusion = after_val_eval['confusion']
+        val_after_metrics = {
+            'exact_match_rate': after_val_eval['exact_match_rate'],
+            'cm_can_can': confusion.get('can_can', 0),
+            'cm_can_uncertain': confusion.get('can_uncertain', 0),
+            'cm_can_cannot': confusion.get('can_cannot', 0),
+            'cm_uncertain_can': confusion.get('uncertain_can', 0),
+            'cm_uncertain_uncertain': confusion.get('uncertain_uncertain', 0),
+            'cm_uncertain_cannot': confusion.get('uncertain_cannot', 0),
+            'cm_cannot_can': confusion.get('cannot_can', 0),
+            'cm_cannot_uncertain': confusion.get('cannot_uncertain', 0),
+            'cm_cannot_cannot': confusion.get('cannot_cannot', 0),
+        }
+
         pipeline.record_phase_result(
             phase_name="phase3_judgment",
             status="completed",
@@ -685,7 +700,7 @@ def main():
                 "val_before_exact_match": before_val_eval['exact_match_rate'],
                 "val_after_exact_match": after_val_eval['exact_match_rate'],
                 "val_improvement": val_improvement,
-                "confusion_matrix": after_val_eval['confusion'],
+                "val_after": val_after_metrics,  # Nested dict with cm_ prefix keys
                 # QA metrics
                 "qa_train_before": qa_before_train['qa_accuracy'],
                 "qa_train_after": qa_after_train['qa_accuracy'],
