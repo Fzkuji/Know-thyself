@@ -39,6 +39,8 @@ from src.knowledge_trainer import build_qa_dataset
 from src.trainer import setup_model_for_training
 from src.adapter_utils import merge_adapter_into_base
 from tqdm import tqdm
+import re
+import subprocess
 
 
 def is_main_process():
@@ -60,6 +62,148 @@ def cleanup_ddp():
     """Clean up distributed training."""
     if dist.is_initialized():
         dist.destroy_process_group()
+
+
+# ============== Evaluation Functions ==============
+
+def test_qa_accuracy(
+    model_path: str,
+    samples: list,
+    num_trials: int = 5,
+    inference_batch_size: int = 16,
+    multi_gpu: bool = True,
+    num_gpus: int = None,
+) -> dict:
+    """
+    Test QA accuracy on given samples using batch inference.
+    Returns accuracy, correct count, and total count.
+    """
+    # Filter samples with valid answers
+    valid_samples = []
+    for sample in samples:
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        if gold_answers:
+            valid_samples.append(sample)
+
+    if not valid_samples:
+        return {"qa_accuracy": 0, "qa_correct": 0, "qa_total": 0}
+
+    # Build all prompts at once: samples × num_trials
+    all_prompts = []
+    for sample in valid_samples:
+        prompt = f"Question: {sample['question']}\nAnswer:"
+        all_prompts.extend([prompt] * num_trials)
+
+    # Create inference instance
+    inference = create_inference(
+        model_name=model_path,
+        inference_batch_size=inference_batch_size,
+        temperature=1.0,
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
+    )
+
+    # Batch generate all responses at once
+    all_responses = inference.generate_batch(all_prompts)
+
+    # Clean up inference
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
+    del inference
+    torch.cuda.empty_cache()
+
+    # Evaluate results: group responses back to samples
+    correct_count = 0
+    for i, sample in enumerate(valid_samples):
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_responses[start_idx:end_idx]
+
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        any_correct = any(is_correct(r, gold_answers) for r in responses)
+        if any_correct:
+            correct_count += 1
+
+    total = len(valid_samples)
+    accuracy = correct_count / total if total > 0 else 0
+
+    return {
+        "qa_accuracy": accuracy * 100,  # As percentage
+        "qa_correct": correct_count,
+        "qa_total": total,
+    }
+
+
+def run_judgment_evaluation(
+    model_path: str,
+    lora_path: str,
+    split: str,
+    num_samples: int,
+    num_trials: int,
+    inference_batch_size: int,
+    multi_gpu: bool = True,
+    num_gpus: int = None,
+) -> dict:
+    """
+    Run judgment evaluation using step4_evaluate.py script.
+    Returns parsed metrics from the evaluation output.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+
+    cmd = [
+        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+        "--model", model_path,
+        "--lora_path", lora_path,
+        "--num_samples", str(num_samples),
+        "--num_trials", str(num_trials),
+        "--inference_batch_size", str(inference_batch_size),
+        "--split", split,
+    ]
+    if multi_gpu:
+        cmd.append("--multi_gpu")
+    if num_gpus is not None:
+        cmd.extend(["--num_gpus", str(num_gpus)])
+
+    # Run and capture output
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    output_lines = []
+    for line in process.stdout:
+        print(line, end='', flush=True)
+        output_lines.append(line)
+
+    process.wait()
+    output = ''.join(output_lines)
+
+    # Parse metrics from output
+    metrics = {}
+
+    # Extract exact match rate
+    match = re.search(r'Exact match.*?(\d+\.?\d*)%', output)
+    if match:
+        metrics['exact_match_rate'] = float(match.group(1))
+
+    # Extract predicted distribution
+    match = re.search(r'Predicted distribution: can=(\d+), uncertain=(\d+), cannot=(\d+)', output)
+    if match:
+        metrics['pred_can'] = int(match.group(1))
+        metrics['pred_uncertain'] = int(match.group(2))
+        metrics['pred_cannot'] = int(match.group(3))
+
+    # Extract actual distribution
+    match = re.search(r'Actual distribution:\s+can=(\d+), uncertain=(\d+), cannot=(\d+)', output)
+    if match:
+        metrics['actual_can'] = int(match.group(1))
+        metrics['actual_uncertain'] = int(match.group(2))
+        metrics['actual_cannot'] = int(match.group(3))
+
+    return metrics
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
@@ -279,12 +423,79 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         del tokenizer
         torch.cuda.empty_cache()
 
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Step 1.4: Evaluate (only on rank 0)
+    eval_results = {}
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 1 Evaluation")
+        print("=" * 60)
+
+        # For evaluation, use the trained model
+        if args.no_lora:
+            eval_model = str(adapter_path)
+            eval_lora = "none"
+        else:
+            eval_model = args.model
+            eval_lora = str(adapter_path)
+
+        # Baseline evaluation (before training)
+        print("\n[Step 1.4a] Baseline JUDGMENT evaluation (train split)...")
+        eval_results['before_train'] = run_judgment_evaluation(
+            args.model, "none", "train", args.num_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        print("\n[Step 1.4b] Baseline JUDGMENT evaluation (validation split)...")
+        eval_results['before_val'] = run_judgment_evaluation(
+            args.model, "none", "validation", args.test_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        # Baseline QA
+        print("\n[Step 1.4c] Baseline QA accuracy...")
+        val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+        qa_before = test_qa_accuracy(
+            args.model, val_samples, args.num_trials,
+            args.inference_batch_size, True, args.num_gpus
+        )
+        eval_results['before_val'].update(qa_before)
+        print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
+
+        # After training evaluation
+        print("\n[Step 1.4d] After training JUDGMENT evaluation (train split)...")
+        eval_results['after_train'] = run_judgment_evaluation(
+            eval_model, eval_lora, "train", args.num_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        print("\n[Step 1.4e] After training JUDGMENT evaluation (validation split)...")
+        eval_results['after_val'] = run_judgment_evaluation(
+            eval_model, eval_lora, "validation", args.test_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        # Print summary
+        print("\n" + "=" * 60)
+        print("Phase 1 Evaluation Summary")
+        print("=" * 60)
+        before_train_acc = eval_results.get('before_train', {}).get('exact_match_rate', 0)
+        before_val_acc = eval_results.get('before_val', {}).get('exact_match_rate', 0)
+        after_train_acc = eval_results.get('after_train', {}).get('exact_match_rate', 0)
+        after_val_acc = eval_results.get('after_val', {}).get('exact_match_rate', 0)
+        print(f"  JUDGMENT Accuracy:")
+        print(f"    Before: Train={before_train_acc:.1f}%, Val={before_val_acc:.1f}%")
+        print(f"    After:  Train={after_train_acc:.1f}%, Val={after_val_acc:.1f}%")
+        print(f"    Improvement: Train={after_train_acc - before_train_acc:+.1f}%, Val={after_val_acc - before_val_acc:+.1f}%")
+
     # Record phase result
     if is_main_process():
         pipeline.record_phase_result(
             phase_name="phase1_judgment",
             status="completed",
-            metrics={},
+            metrics=eval_results,
             output_paths={
                 "responses": str(responses_path),
                 "training_data": str(training_data_path),
@@ -410,12 +621,81 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
                 )
                 print(f"Merged model saved to {merged_path}")
 
+    # Step 2.4: Test knowledge acquisition (only on rank 0)
+    eval_results = {}
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 2 Evaluation: Knowledge Acquisition Test")
+        print("=" * 60)
+
+        test_model_path = str(merged_path) if merged_path.exists() else str(adapter_path)
+
+        # Test on TRAIN split
+        print("\n[Step 2.4a] Testing on TRAIN split...")
+        train_test_samples = samples[:args.test_samples]
+        print(f"  Testing on {len(train_test_samples)} samples")
+
+        print("  Before training (base model):")
+        before_train = test_qa_accuracy(
+            args.model, train_test_samples, args.num_trials,
+            args.inference_batch_size, True, args.num_gpus
+        )
+        print(f"    Accuracy: {before_train['qa_accuracy']:.1f}%")
+
+        print("  After training (with knowledge):")
+        after_train = test_qa_accuracy(
+            test_model_path, train_test_samples, args.num_trials,
+            args.inference_batch_size, True, args.num_gpus
+        )
+        print(f"    Accuracy: {after_train['qa_accuracy']:.1f}%")
+        train_improvement = after_train['qa_accuracy'] - before_train['qa_accuracy']
+        print(f"    Improvement: {train_improvement:+.1f}%")
+
+        # Test on VALIDATION split
+        print("\n[Step 2.4b] Testing on VALIDATION split...")
+        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+        print(f"  Testing on {len(val_test_samples)} samples")
+
+        print("  Before training (base model):")
+        before_val = test_qa_accuracy(
+            args.model, val_test_samples, args.num_trials,
+            args.inference_batch_size, True, args.num_gpus
+        )
+        print(f"    Accuracy: {before_val['qa_accuracy']:.1f}%")
+
+        print("  After training (with knowledge):")
+        after_val = test_qa_accuracy(
+            test_model_path, val_test_samples, args.num_trials,
+            args.inference_batch_size, True, args.num_gpus
+        )
+        print(f"    Accuracy: {after_val['qa_accuracy']:.1f}%")
+        val_improvement = after_val['qa_accuracy'] - before_val['qa_accuracy']
+        print(f"    Improvement: {val_improvement:+.1f}%")
+
+        # Summary
+        print("\n" + "=" * 60)
+        print("Phase 2 Evaluation Summary")
+        print("=" * 60)
+        print(f"  QA Accuracy:")
+        print(f"    Before: Train={before_train['qa_accuracy']:.1f}%, Val={before_val['qa_accuracy']:.1f}%")
+        print(f"    After:  Train={after_train['qa_accuracy']:.1f}%, Val={after_val['qa_accuracy']:.1f}%")
+        print(f"    Improvement: Train={train_improvement:+.1f}%, Val={val_improvement:+.1f}%")
+
+        eval_results = {
+            "train_before_accuracy": before_train['qa_accuracy'],
+            "train_after_accuracy": after_train['qa_accuracy'],
+            "train_improvement": train_improvement,
+            "val_before_accuracy": before_val['qa_accuracy'],
+            "val_after_accuracy": after_val['qa_accuracy'],
+            "val_improvement": val_improvement,
+        }
+
     # Record phase result
     if is_main_process():
         pipeline.record_phase_result(
             phase_name="phase2_knowledge",
             status="completed",
-            metrics={},
+            metrics=eval_results,
             output_paths={
                 "qa_data": str(qa_data_path),
                 "knowledge": str(adapter_path),
@@ -570,12 +850,85 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         del tokenizer
         torch.cuda.empty_cache()
 
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Step 3.4: Final Evaluation (only on rank 0)
+    eval_results = {}
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 3 Evaluation: Final Assessment")
+        print("=" * 60)
+
+        # Setup evaluation paths
+        if args.no_lora:
+            eval_model = str(adapter_path)
+            eval_lora = "none"
+        else:
+            eval_model = base_model  # base_with_knowledge
+            eval_lora = str(adapter_path)  # judgment_v2
+
+        # Judgment evaluation
+        print("\n[Step 3.4a] Final JUDGMENT evaluation (train split)...")
+        eval_results['judgment_train'] = run_judgment_evaluation(
+            eval_model, eval_lora, "train", args.num_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        print("\n[Step 3.4b] Final JUDGMENT evaluation (validation split)...")
+        eval_results['judgment_val'] = run_judgment_evaluation(
+            eval_model, eval_lora, "validation", args.test_samples,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+
+        # QA evaluation (test if knowledge was preserved)
+        print("\n[Step 3.4c] Final QA accuracy (train split)...")
+        train_samples_for_qa = original_samples[:args.test_samples]
+        qa_train = test_qa_accuracy(
+            eval_model if args.no_lora else base_model, train_samples_for_qa,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+        eval_results['qa_train'] = qa_train
+        print(f"  QA accuracy (train): {qa_train['qa_accuracy']:.1f}%")
+
+        print("\n[Step 3.4d] Final QA accuracy (validation split)...")
+        val_samples_for_qa = load_triviaqa(split="validation", num_samples=args.test_samples)
+        qa_val = test_qa_accuracy(
+            eval_model if args.no_lora else base_model, val_samples_for_qa,
+            args.num_trials, args.inference_batch_size, True, args.num_gpus
+        )
+        eval_results['qa_val'] = qa_val
+        print(f"  QA accuracy (val): {qa_val['qa_accuracy']:.1f}%")
+
+        # Compare with Phase 1 (before knowledge learning)
+        print("\n" + "=" * 60)
+        print("Phase 3 Evaluation Summary")
+        print("=" * 60)
+        judgment_train_acc = eval_results.get('judgment_train', {}).get('exact_match_rate', 0)
+        judgment_val_acc = eval_results.get('judgment_val', {}).get('exact_match_rate', 0)
+        print(f"  Final JUDGMENT Accuracy:")
+        print(f"    Train: {judgment_train_acc:.1f}%")
+        print(f"    Val:   {judgment_val_acc:.1f}%")
+        print(f"  Final QA Accuracy:")
+        print(f"    Train: {qa_train['qa_accuracy']:.1f}%")
+        print(f"    Val:   {qa_val['qa_accuracy']:.1f}%")
+
+        # Show ability distribution change
+        print("\n  Ability Distribution (Post-Knowledge):")
+        ability_dist = {}
+        for s in new_samples:
+            ability = s.get("ability", "unknown")
+            ability_dist[ability] = ability_dist.get(ability, 0) + 1
+        for ability, count in sorted(ability_dist.items()):
+            pct = count / len(new_samples) * 100
+            print(f"    {ability}: {count} ({pct:.1f}%)")
+
     # Record phase result
     if is_main_process():
         pipeline.record_phase_result(
             phase_name="phase3_judgment",
             status="completed",
-            metrics={},
+            metrics=eval_results,
             output_paths={
                 "responses": str(responses_path),
                 "training_data": str(training_data_path),
