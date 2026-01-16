@@ -279,10 +279,6 @@ class DDPAdaptiveKnowledgeTrainer:
                 if epoch_stats.get("avg_loss"):
                     print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
 
-            # Synchronize all GPUs before next epoch
-            if dist.is_initialized():
-                dist.barrier()
-
             # Early stopping if all samples are correct
             if epoch_stats["correct_after"] >= total_samples:
                 if is_main_process():
@@ -542,10 +538,6 @@ class DDPAdaptiveJudgmentTrainer:
 
                 if epoch_stats.get("avg_loss"):
                     print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
-
-            # Synchronize all GPUs before next epoch
-            if dist.is_initialized():
-                dist.barrier()
 
             if epoch_stats["correct_after"] >= total_samples:
                 if is_main_process():
