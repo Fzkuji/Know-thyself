@@ -168,53 +168,56 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
 
     # Step 1.1: Collect responses
+    # NOTE: Inference runs ONLY on rank 0 to avoid multi-GPU conflicts in DDP mode
     responses_path = phase_output / "responses.jsonl"
     if not args.force and is_step_completed(1, "1.1_responses", pipeline, args):
         if is_main_process():
             print(f"\n[Step 1.1] Responses already collected, loading from {responses_path}")
-        samples = load_from_jsonl(str(responses_path))
+        # All processes load from file after barrier
     else:
         if is_main_process():
             print(f"\n[Step 1.1] Collecting responses from train split...")
 
-        # Load questions
-        raw_samples = load_triviaqa(split="train", num_samples=args.num_samples)
+            # Load questions
+            raw_samples = load_triviaqa(split="train", num_samples=args.num_samples)
 
-        # Use multi-GPU inference for response collection (not DDP training)
-        inference = create_inference(
-            model_name=args.model,
-            inference_batch_size=args.inference_batch_size,
-            temperature=1.0,
-            multi_gpu=True,
-            num_gpus=args.num_gpus,
-        )
+            # Use multi-GPU inference for response collection (only rank 0)
+            inference = create_inference(
+                model_name=args.model,
+                inference_batch_size=args.inference_batch_size,
+                temperature=1.0,
+                multi_gpu=True,
+                num_gpus=args.num_gpus,
+            )
 
-        samples = inference.batch_inference(
-            samples=raw_samples,
-            num_trials=args.num_trials,
-            prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
-        )
+            samples = inference.batch_inference(
+                samples=raw_samples,
+                num_trials=args.num_trials,
+                prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
+            )
 
-        # Evaluate and classify
-        for sample in samples:
-            gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-            evaluation = evaluate_responses(sample["responses"], gold_answers)
-            sample["evaluation"] = evaluation
-            sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
+            # Evaluate and classify
+            for sample in samples:
+                gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+                evaluation = evaluate_responses(sample["responses"], gold_answers)
+                sample["evaluation"] = evaluation
+                sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
 
-        if hasattr(inference, 'shutdown'):
-            inference.shutdown()
-        del inference
-        torch.cuda.empty_cache()
+            if hasattr(inference, 'shutdown'):
+                inference.shutdown()
+            del inference
+            torch.cuda.empty_cache()
 
-        # Save (main process only)
-        if is_main_process():
+            # Save responses
             save_to_jsonl(samples, str(responses_path))
             print(f"Saved {len(samples)} samples to {responses_path}")
 
-    # Synchronize before next step
+    # Synchronize: wait for rank 0 to finish inference
     if dist.is_initialized():
         dist.barrier()
+
+    # All processes load the saved responses
+    samples = load_from_jsonl(str(responses_path))
 
     # Step 1.2: Build training data
     training_data_path = phase_output / "training_data.jsonl"
@@ -456,41 +459,41 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
     original_samples = load_from_jsonl(str(input_path))[:args.num_samples]
 
     # Step 3.1: Re-collect responses with knowledge model
+    # NOTE: Inference runs ONLY on rank 0 to avoid multi-GPU conflicts in DDP mode
     responses_path = phase3_output / "responses_post_knowledge.jsonl"
     if not args.force and is_step_completed(3, "3.1_responses", pipeline, args):
         if is_main_process():
             print(f"\n[Step 3.1] Responses already collected, loading from {responses_path}")
-        new_samples = load_from_jsonl(str(responses_path))
+        # All processes load from file after barrier
     else:
         if is_main_process():
             print(f"\n[Step 3.1] Re-collecting responses with knowledge model...")
 
-        inference = create_inference(
-            model_name=base_model,
-            inference_batch_size=args.inference_batch_size,
-            temperature=1.0,
-            multi_gpu=True,
-            num_gpus=args.num_gpus,
-        )
+            inference = create_inference(
+                model_name=base_model,
+                inference_batch_size=args.inference_batch_size,
+                temperature=1.0,
+                multi_gpu=True,
+                num_gpus=args.num_gpus,
+            )
 
-        new_samples = inference.batch_inference(
-            samples=original_samples,
-            num_trials=args.num_trials,
-            prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
-        )
+            new_samples = inference.batch_inference(
+                samples=original_samples,
+                num_trials=args.num_trials,
+                prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
+            )
 
-        for sample in new_samples:
-            gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-            evaluation = evaluate_responses(sample["responses"], gold_answers)
-            sample["evaluation"] = evaluation
-            sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
+            for sample in new_samples:
+                gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+                evaluation = evaluate_responses(sample["responses"], gold_answers)
+                sample["evaluation"] = evaluation
+                sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
 
-        if hasattr(inference, 'shutdown'):
-            inference.shutdown()
-        del inference
-        torch.cuda.empty_cache()
+            if hasattr(inference, 'shutdown'):
+                inference.shutdown()
+            del inference
+            torch.cuda.empty_cache()
 
-        if is_main_process():
             save_to_jsonl(new_samples, str(responses_path))
 
             # Show distribution change
@@ -500,8 +503,12 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
                 new_dist[ability] = new_dist.get(ability, 0) + 1
             print(f"New ability distribution: {new_dist}")
 
+    # Synchronize: wait for rank 0 to finish inference
     if dist.is_initialized():
         dist.barrier()
+
+    # All processes load the saved responses
+    new_samples = load_from_jsonl(str(responses_path))
 
     # Step 3.2: Build new training data
     training_data_path = phase3_output / "training_data_v2.jsonl"
