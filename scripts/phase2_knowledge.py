@@ -40,10 +40,21 @@ def test_knowledge_acquisition(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    num_gpus: int = None
+    num_gpus: int = None,
+    model=None,
+    tokenizer=None,
 ):
     """
     Test if model actually learned the knowledge using batch inference.
+
+    Args:
+        model_path: Path to model (used if model/tokenizer not provided)
+        samples: List of samples to test
+        num_trials: Number of generation trials per sample
+        inference_batch_size: Batch size for inference
+        num_gpus: Number of GPUs (for multi-GPU inference when loading from path)
+        model: Pre-loaded model (optional, avoids reloading)
+        tokenizer: Pre-loaded tokenizer (optional, avoids reloading)
 
     Returns accuracy on the QA samples.
     """
@@ -67,27 +78,72 @@ def test_knowledge_acquisition(
         prompt = f"Question: {sample['question']}\nAnswer:"
         all_prompts.extend([prompt] * num_trials)
 
-    # Create inference instance (auto multi-GPU)
-    inference = create_inference(
-        model_name=model_path,
-        inference_batch_size=inference_batch_size,
-        temperature=1.0,
-        num_gpus=num_gpus,
-    )
+    # Use provided model or create inference instance
+    if model is not None and tokenizer is not None:
+        # Use provided model directly (single GPU, already loaded)
+        print("Using pre-loaded model for inference...")
+        model.eval()
+        all_responses = []
 
-    # Batch generate all responses at once
-    print("Running batch inference...")
-    all_responses = inference.generate_batch(all_prompts)
+        # Process in batches
+        for i in range(0, len(all_prompts), inference_batch_size):
+            batch_prompts = all_prompts[i:i + inference_batch_size]
 
-    # Clean up inference - ensure complete release before any subsequent operations
-    if hasattr(inference, 'shutdown'):
-        inference.shutdown()
-    del inference
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-    time.sleep(2.0)  # Wait for GPU memory to be fully released
+            # Tokenize batch with LEFT padding for generation
+            tokenizer.padding_side = "left"
+            inputs = tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(model.device)
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    temperature=1.0,
+                    do_sample=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+
+            # Decode responses
+            for j, output in enumerate(outputs):
+                response = tokenizer.decode(
+                    output[inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
+                all_responses.append(response)
+
+            if (i // inference_batch_size + 1) % 10 == 0:
+                print(f"  Processed {min(i + inference_batch_size, len(all_prompts))}/{len(all_prompts)} prompts")
+
+        # No cleanup needed - caller manages the model
+        should_cleanup = False
+    else:
+        # Create inference instance (auto multi-GPU)
+        inference = create_inference(
+            model_name=model_path,
+            inference_batch_size=inference_batch_size,
+            temperature=1.0,
+            num_gpus=num_gpus,
+        )
+
+        # Batch generate all responses at once
+        print("Running batch inference...")
+        all_responses = inference.generate_batch(all_prompts)
+        should_cleanup = True
+
+        # Clean up inference - ensure complete release before any subsequent operations
+        if hasattr(inference, 'shutdown'):
+            inference.shutdown()
+        del inference
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Evaluate results: group responses back to samples
     correct_count = 0
@@ -120,8 +176,8 @@ def main():
                         help="Input file with questions and answers (from Phase 1)")
     parser.add_argument("--output_dir", type=str,
                         default=str(project_root / "outputs/phase2_knowledge"))
-    parser.add_argument("--epochs", type=int, default=2,
-                        help="Number of epochs (default: 2 for adaptive)")
+    parser.add_argument("--epochs", type=int, default=15,
+                        help="Number of epochs (default: 15 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="1e-4 for LoRA, 1e-5 for full fine-tuning")
@@ -200,7 +256,35 @@ def main():
         print(f"\n[{i+1}] Question: {user_msg[:60]}...")
         print(f"    Answer: {assistant_msg}")
 
-    # Step 2.2: Setup model and train
+    # Step 2.2: Baseline evaluation BEFORE training (GPU is free now)
+    train_test_samples = samples[:args.test_samples]
+    val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+
+    if is_main_process():
+        print(f"\n--- Baseline evaluation on TRAIN split ---")
+        print(f"Testing on {len(train_test_samples)} samples (train split)")
+        print("\nBefore training (base model) on TRAIN:")
+    before_train = test_knowledge_acquisition(
+        args.model, train_test_samples,
+        inference_batch_size=args.inference_batch_size,
+        num_gpus=args.num_gpus
+    )
+    if is_main_process():
+        print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
+
+    if is_main_process():
+        print(f"\n--- Baseline evaluation on VALIDATION split ---")
+        print(f"Testing on {len(val_test_samples)} samples (validation split)")
+        print("\nBefore training (base model) on VALIDATION:")
+    before_val = test_knowledge_acquisition(
+        args.model, val_test_samples,
+        inference_batch_size=args.inference_batch_size,
+        num_gpus=args.num_gpus
+    )
+    if is_main_process():
+        print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
+
+    # Step 2.3: Setup model and train
     if is_main_process():
         print(f"\nSetting up model: {args.model}")
         print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
@@ -331,85 +415,95 @@ def main():
     if is_main_process():
         print(f"\nKnowledge model saved to {adapter_path}")
 
-    # Step 2.3: Merge adapter into base model (or use full fine-tuned model directly)
+    # Step 2.4: Merge adapter into base model (or use full fine-tuned model directly)
     merged_path = None
+    eval_model = None
+    eval_tokenizer = None
+
     if args.no_lora:
         # Full fine-tuning: the trained model is already complete, use it directly
         merged_path = adapter_path  # adapter_path contains the full model
+        eval_model = model  # Reuse training model
+        eval_tokenizer = tokenizer
         if is_main_process():
             print(f"\nFull fine-tuning: Model saved directly to {merged_path}")
     elif not args.no_merge:
         merged_path = output_dir / "base_with_knowledge"
         if is_main_process():
+            # Need to clean up training model before merging to free GPU memory
+            del model
+            del tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            time.sleep(1.0)
+            print("Cleaned up training model from GPU memory")
+
             print(f"\nMerging adapter into base model...")
-        merge_adapter_into_base(
-            args.model,
-            str(adapter_path),
-            str(merged_path)
-        )
-        if is_main_process():
+            merge_adapter_into_base(
+                args.model,
+                str(adapter_path),
+                str(merged_path)
+            )
             print(f"Merged model saved to {merged_path}")
 
-    # Step 2.4: Test knowledge acquisition on both train and validation splits
+            # Load merged model for evaluation
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            print("Loading merged model for evaluation...")
+            eval_model = AutoModelForCausalLM.from_pretrained(
+                str(merged_path),
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            eval_tokenizer = AutoTokenizer.from_pretrained(str(merged_path), trust_remote_code=True)
+            if eval_tokenizer.pad_token is None:
+                eval_tokenizer.pad_token = eval_tokenizer.eos_token
+
+    # Step 2.5: Test knowledge acquisition using pre-loaded model
     test_model_path = str(merged_path) if merged_path else args.model
 
-    # Test on TRAIN split (verify model learned training data)
-    if is_main_process():
-        print(f"\n--- Testing knowledge acquisition on TRAIN split ---")
-    train_test_samples = samples[:args.test_samples]  # Use subset of training data
-    if is_main_process():
+    if is_main_process() and eval_model is not None:
+        print(f"\n--- After-training evaluation on TRAIN split ---")
         print(f"Testing on {len(train_test_samples)} samples (train split)")
-
-    if is_main_process():
-        print("\nBefore training (base model) on TRAIN:")
-    before_train = test_knowledge_acquisition(
-        args.model, train_test_samples,
-        inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    if is_main_process():
-        print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
-
-    if is_main_process():
         print("\nAfter training (with knowledge) on TRAIN:")
-    after_train = test_knowledge_acquisition(
-        test_model_path, train_test_samples,
-        inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    train_improvement = after_train['accuracy'] - before_train['accuracy']
-    if is_main_process():
+        after_train = test_knowledge_acquisition(
+            test_model_path, train_test_samples,
+            inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus,
+            model=eval_model, tokenizer=eval_tokenizer
+        )
+        train_improvement = after_train['accuracy'] - before_train['accuracy']
         print(f"Accuracy: {after_train['accuracy']*100:.1f}% ({after_train['correct']}/{after_train['total']})")
         print(f"Train Improvement: {train_improvement*100:+.1f}%")
 
-    # Test on VALIDATION split (test generalization)
-    if is_main_process():
-        print(f"\n--- Testing knowledge acquisition on VALIDATION split ---")
-    val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-    if is_main_process():
+        print(f"\n--- After-training evaluation on VALIDATION split ---")
         print(f"Testing on {len(val_test_samples)} samples (validation split - held-out)")
-
-    if is_main_process():
-        print("\nBefore training (base model) on VALIDATION:")
-    before_val = test_knowledge_acquisition(
-        args.model, val_test_samples,
-        inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    if is_main_process():
-        print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
-
-    if is_main_process():
         print("\nAfter training (with knowledge) on VALIDATION:")
-    after_val = test_knowledge_acquisition(
-        test_model_path, val_test_samples,
-        inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    val_improvement = after_val['accuracy'] - before_val['accuracy']
-    if is_main_process():
+        after_val = test_knowledge_acquisition(
+            test_model_path, val_test_samples,
+            inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus,
+            model=eval_model, tokenizer=eval_tokenizer
+        )
+        val_improvement = after_val['accuracy'] - before_val['accuracy']
         print(f"Accuracy: {after_val['accuracy']*100:.1f}% ({after_val['correct']}/{after_val['total']})")
         print(f"Validation Improvement: {val_improvement*100:+.1f}%")
+
+        # Clean up evaluation model
+        del eval_model
+        del eval_tokenizer
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("Cleaned up evaluation model from GPU memory")
+    else:
+        # Fallback: use regular inference (should not happen normally)
+        after_train = {"accuracy": 0, "correct": 0, "total": 0}
+        after_val = {"accuracy": 0, "correct": 0, "total": 0}
+        train_improvement = 0
+        val_improvement = 0
 
     # Record to pipeline if available
     if pipeline and is_main_process():

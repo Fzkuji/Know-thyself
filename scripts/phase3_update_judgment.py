@@ -303,7 +303,7 @@ def main():
     # Training params
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_trials", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="1e-4 for LoRA, 1e-5 for full fine-tuning")

@@ -72,9 +72,21 @@ def test_qa_accuracy(
     num_trials: int = 5,
     inference_batch_size: int = 16,
     num_gpus: int = None,
+    model=None,
+    tokenizer=None,
 ) -> dict:
     """
     Test QA accuracy on given samples using batch inference.
+
+    Args:
+        model_path: Path to model (used if model/tokenizer not provided)
+        samples: List of samples to test
+        num_trials: Number of generation trials per sample
+        inference_batch_size: Batch size for inference
+        num_gpus: Number of GPUs (for multi-GPU inference when loading from path)
+        model: Pre-loaded model (optional, avoids reloading)
+        tokenizer: Pre-loaded tokenizer (optional, avoids reloading)
+
     Returns accuracy, correct count, and total count.
     """
     # Filter samples with valid answers
@@ -93,22 +105,61 @@ def test_qa_accuracy(
         prompt = f"Question: {sample['question']}\nAnswer:"
         all_prompts.extend([prompt] * num_trials)
 
-    # Create inference instance (auto multi-GPU)
-    inference = create_inference(
-        model_name=model_path,
-        inference_batch_size=inference_batch_size,
-        temperature=1.0,
-        num_gpus=num_gpus,
-    )
+    # Use provided model or create inference instance
+    if model is not None and tokenizer is not None:
+        # Use provided model directly (single GPU, already loaded)
+        print("Using pre-loaded model for QA accuracy test...")
+        model.eval()
+        all_responses = []
 
-    # Batch generate all responses at once
-    all_responses = inference.generate_batch(all_prompts)
+        # Process in batches with LEFT padding for generation
+        tokenizer.padding_side = "left"
+        for i in range(0, len(all_prompts), inference_batch_size):
+            batch_prompts = all_prompts[i:i + inference_batch_size]
 
-    # Clean up inference
-    if hasattr(inference, 'shutdown'):
-        inference.shutdown()
-    del inference
-    torch.cuda.empty_cache()
+            inputs = tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(model.device)
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    temperature=1.0,
+                    do_sample=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+
+            # Decode responses
+            for output in outputs:
+                response = tokenizer.decode(
+                    output[inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
+                all_responses.append(response)
+
+        # No cleanup - caller manages the model
+    else:
+        # Create inference instance (auto multi-GPU)
+        inference = create_inference(
+            model_name=model_path,
+            inference_batch_size=inference_batch_size,
+            temperature=1.0,
+            num_gpus=num_gpus,
+        )
+
+        # Batch generate all responses at once
+        all_responses = inference.generate_batch(all_prompts)
+
+        # Clean up inference
+        if hasattr(inference, 'shutdown'):
+            inference.shutdown()
+        del inference
+        torch.cuda.empty_cache()
 
     # Evaluate results: group responses back to samples
     correct_count = 0
@@ -199,6 +250,178 @@ def run_judgment_evaluation(
         metrics['actual_cannot'] = int(match.group(3))
 
     return metrics
+
+
+def parse_judgment_response(response: str) -> str:
+    """Parse judgment response to extract ability prediction."""
+    response = response.strip().lower()
+
+    # Parse \boxed{} format
+    match = re.search(r'\\boxed\{(\w+)\}', response)
+    if match:
+        answer = match.group(1).lower()
+        if answer == "yes":
+            return "can"
+        elif answer == "uncertain":
+            return "uncertain"
+        else:
+            return "cannot"
+
+    # Fallback: check keywords
+    if "yes" in response:
+        return "can"
+    elif "uncertain" in response:
+        return "uncertain"
+    else:
+        return "cannot"
+
+
+def evaluate_judgment_with_model(
+    model,
+    tokenizer,
+    samples: list,
+    num_trials: int = 5,
+    inference_batch_size: int = 16,
+) -> dict:
+    """
+    Evaluate judgment accuracy using a pre-loaded model.
+
+    Args:
+        model: Pre-loaded model
+        tokenizer: Pre-loaded tokenizer
+        samples: List of samples to evaluate
+        num_trials: Number of trials per question for actual ability
+
+    Returns:
+        Dict with evaluation metrics
+    """
+    print(f"Evaluating judgment on {len(samples)} samples using pre-loaded model...")
+
+    model.eval()
+    tokenizer.padding_side = "left"
+
+    # Step 1: Predict judgment abilities
+    print("Step 1: Predicting judgment abilities...")
+    judgment_prompts = []
+    for sample in samples:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {sample['question']}"}
+        ]
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        judgment_prompts.append(prompt)
+
+    # Generate judgment predictions in batches
+    predicted_abilities = []
+    for i in range(0, len(judgment_prompts), inference_batch_size):
+        batch_prompts = judgment_prompts[i:i + inference_batch_size]
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        ).to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=32,
+                temperature=0.1,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        for output in outputs:
+            response = tokenizer.decode(
+                output[inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+            predicted_abilities.append(parse_judgment_response(response))
+
+    # Step 2: Generate QA responses to determine actual abilities
+    print("Step 2: Generating QA responses...")
+    qa_prompts = []
+    for sample in samples:
+        messages = [
+            {"role": "system", "content": "Answer the question concisely and directly."},
+            {"role": "user", "content": sample['question']}
+        ]
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        qa_prompts.extend([prompt] * num_trials)
+
+    # Generate QA responses in batches
+    all_qa_responses = []
+    for i in range(0, len(qa_prompts), inference_batch_size):
+        batch_prompts = qa_prompts[i:i + inference_batch_size]
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        ).to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=64,
+                temperature=1.0,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        for output in outputs:
+            response = tokenizer.decode(
+                output[inputs["input_ids"].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+            all_qa_responses.append(response)
+
+    # Step 3: Evaluate results
+    print("Step 3: Evaluating results...")
+    correct_count = 0
+    pred_dist = {"can": 0, "uncertain": 0, "cannot": 0}
+    actual_dist = {"can": 0, "uncertain": 0, "cannot": 0}
+
+    for i, sample in enumerate(samples):
+        # Get QA responses for this sample
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_qa_responses[start_idx:end_idx]
+
+        # Determine actual ability
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        correct_responses = sum(1 for r in responses if is_correct(r, gold_answers))
+        actual_ability = classify_ability(correct_responses, num_trials)
+
+        # Get predicted ability
+        predicted_ability = predicted_abilities[i]
+
+        # Update counts
+        pred_dist[predicted_ability] += 1
+        actual_dist[actual_ability] += 1
+
+        if predicted_ability == actual_ability:
+            correct_count += 1
+
+    total = len(samples)
+    exact_match_rate = correct_count / total * 100 if total > 0 else 0
+
+    print(f"\nResults:")
+    print(f"  Exact match rate: {exact_match_rate:.1f}%")
+    print(f"  Predicted distribution: can={pred_dist['can']}, uncertain={pred_dist['uncertain']}, cannot={pred_dist['cannot']}")
+    print(f"  Actual distribution: can={actual_dist['can']}, uncertain={actual_dist['uncertain']}, cannot={actual_dist['cannot']}")
+
+    return {
+        "exact_match_rate": exact_match_rate,
+        "pred_can": pred_dist["can"],
+        "pred_uncertain": pred_dist["uncertain"],
+        "pred_cannot": pred_dist["cannot"],
+        "actual_can": actual_dist["can"],
+        "actual_uncertain": actual_dist["uncertain"],
+        "actual_cannot": actual_dist["cannot"],
+    }
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
@@ -374,14 +597,63 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 1.3: Train judgment (DDP)
+    # Step 1.3: Baseline evaluation BEFORE training (GPU is free now)
+    eval_results = {}
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 1 Baseline Evaluation (Before Training)")
+        print("=" * 60)
+
+        # Baseline evaluation uses subprocess (separate process, no memory conflict)
+        print("\n[Step 1.3a] Baseline JUDGMENT evaluation (train split)...")
+        eval_results['before_train'] = run_judgment_evaluation(
+            args.model, "none", "train", args.num_samples,
+            args.num_trials, args.inference_batch_size, args.num_gpus
+        )
+
+        print("\n[Step 1.3b] Baseline JUDGMENT evaluation (validation split)...")
+        eval_results['before_val'] = run_judgment_evaluation(
+            args.model, "none", "validation", args.test_samples,
+            args.num_trials, args.inference_batch_size, args.num_gpus
+        )
+
+        # Baseline QA
+        print("\n[Step 1.3c] Baseline QA accuracy...")
+        val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+        qa_before = test_qa_accuracy(
+            args.model, val_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus
+        )
+        eval_results['before_val'].update(qa_before)
+        print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
+
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Step 1.4: Train judgment (DDP)
     adapter_path = phase_output / "judgment_v1"
+    model = None
+    tokenizer = None
+    raw_model = None
+
     if not args.force and is_step_completed(1, "1.3_train", pipeline, args):
         if is_main_process():
-            print(f"\n[Step 1.3] Judgment model already trained at {adapter_path}")
+            print(f"\n[Step 1.4] Judgment model already trained at {adapter_path}")
+            # Load trained model for evaluation
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            print("Loading trained model for evaluation...")
+            raw_model = AutoModelForCausalLM.from_pretrained(
+                str(adapter_path),
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(str(adapter_path), trust_remote_code=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
     else:
         if is_main_process():
-            print(f"\n[Step 1.3] Training judgment ability with DDP...")
+            print(f"\n[Step 1.4] Training judgment ability with DDP...")
 
         model, tokenizer = setup_model_for_training(
             args.model,
@@ -407,68 +679,39 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
                 skip_correct=True,
             )
 
+            # Keep raw_model for evaluation
+            raw_model = trainer.raw_model
+
             if is_main_process():
-                trainer.raw_model.save_pretrained(str(adapter_path))
+                raw_model.save_pretrained(str(adapter_path))
                 tokenizer.save_pretrained(str(adapter_path))
                 print(f"Saved judgment model to {adapter_path}")
                 print(f"Final stats: {stats['per_epoch'][-1]}")
 
-        del model
-        del tokenizer
-        torch.cuda.empty_cache()
-
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 1.4: Evaluate (only on rank 0)
-    eval_results = {}
-    if is_main_process():
+    # Step 1.5: Evaluate AFTER training using pre-loaded model
+    if is_main_process() and raw_model is not None:
         print("\n" + "=" * 60)
-        print("Phase 1 Evaluation")
+        print("Phase 1 After-Training Evaluation (Using Pre-loaded Model)")
         print("=" * 60)
 
-        # For evaluation, use the trained model
-        if args.no_lora:
-            eval_model = str(adapter_path)
-            eval_lora = "none"
-        else:
-            eval_model = args.model
-            eval_lora = str(adapter_path)
+        # Load test samples
+        train_test_samples = samples[:args.num_samples]  # Use training samples
+        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
 
-        # Baseline evaluation (before training)
-        print("\n[Step 1.4a] Baseline JUDGMENT evaluation (train split)...")
-        eval_results['before_train'] = run_judgment_evaluation(
-            args.model, "none", "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
+        # After training evaluation using pre-loaded model
+        print("\n[Step 1.5a] After training JUDGMENT evaluation (train split)...")
+        eval_results['after_train'] = evaluate_judgment_with_model(
+            raw_model, tokenizer, train_test_samples,
+            args.num_trials, args.inference_batch_size
         )
 
-        print("\n[Step 1.4b] Baseline JUDGMENT evaluation (validation split)...")
-        eval_results['before_val'] = run_judgment_evaluation(
-            args.model, "none", "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
-        )
-
-        # Baseline QA
-        print("\n[Step 1.4c] Baseline QA accuracy...")
-        val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-        qa_before = test_qa_accuracy(
-            args.model, val_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
-        )
-        eval_results['before_val'].update(qa_before)
-        print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
-
-        # After training evaluation
-        print("\n[Step 1.4d] After training JUDGMENT evaluation (train split)...")
-        eval_results['after_train'] = run_judgment_evaluation(
-            eval_model, eval_lora, "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
-        )
-
-        print("\n[Step 1.4e] After training JUDGMENT evaluation (validation split)...")
-        eval_results['after_val'] = run_judgment_evaluation(
-            eval_model, eval_lora, "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
+        print("\n[Step 1.5b] After training JUDGMENT evaluation (validation split)...")
+        eval_results['after_val'] = evaluate_judgment_with_model(
+            raw_model, tokenizer, val_test_samples,
+            args.num_trials, args.inference_batch_size
         )
 
         # Print summary
@@ -483,6 +726,15 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         print(f"    Before: Train={before_train_acc:.1f}%, Val={before_val_acc:.1f}%")
         print(f"    After:  Train={after_train_acc:.1f}%, Val={after_val_acc:.1f}%")
         print(f"    Improvement: Train={after_train_acc - before_train_acc:+.1f}%, Val={after_val_acc - before_val_acc:+.1f}%")
+
+    # Clean up model after evaluation
+    if model is not None:
+        del model
+    if raw_model is not None:
+        del raw_model
+    if tokenizer is not None:
+        del tokenizer
+    torch.cuda.empty_cache()
 
     # Record phase result
     if is_main_process():
@@ -537,14 +789,60 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.2: Train knowledge model (DDP)
+    # Step 2.2: Baseline evaluation BEFORE training (GPU is free now)
+    eval_results = {}
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 2 Baseline Evaluation (Before Training)")
+        print("=" * 60)
+
+        train_test_samples = samples[:args.test_samples]
+        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+
+        print("\n[Step 2.2a] Baseline QA accuracy (train split)...")
+        before_train = test_qa_accuracy(
+            args.model, train_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus
+        )
+        print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
+
+        print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
+        before_val = test_qa_accuracy(
+            args.model, val_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus
+        )
+        print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
+
+        eval_results['train_before_accuracy'] = before_train['qa_accuracy']
+        eval_results['val_before_accuracy'] = before_val['qa_accuracy']
+
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Step 2.3: Train knowledge model (DDP)
     adapter_path = phase2_output / "knowledge"
+    model = None
+    tokenizer = None
+    raw_model = None
+
     if not args.force and is_step_completed(2, "2.2_train", pipeline, args):
         if is_main_process():
-            print(f"\n[Step 2.2] Knowledge model already trained at {adapter_path}")
+            print(f"\n[Step 2.3] Knowledge model already trained at {adapter_path}")
+            # Load trained model for evaluation
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            print("Loading trained model for evaluation...")
+            raw_model = AutoModelForCausalLM.from_pretrained(
+                str(adapter_path),
+                torch_dtype=torch.float16,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(str(adapter_path), trust_remote_code=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
     else:
         if is_main_process():
-            print(f"\n[Step 2.2] Training knowledge model with DDP...")
+            print(f"\n[Step 2.3] Training knowledge model with DDP...")
 
         model, tokenizer = setup_model_for_training(
             args.model,
@@ -583,31 +881,41 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
                 skip_correct=True,
             )
 
+            # Keep raw_model for evaluation
+            raw_model = trainer.raw_model
+
             if is_main_process():
-                trainer.raw_model.save_pretrained(str(adapter_path))
+                raw_model.save_pretrained(str(adapter_path))
                 tokenizer.save_pretrained(str(adapter_path))
                 print(f"Saved knowledge model to {adapter_path}")
                 print(f"Final stats: {stats['per_epoch'][-1]}")
 
-        del model
-        del tokenizer
-        torch.cuda.empty_cache()
-
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.3: Merge adapter (main process only)
+    # Step 2.4: Merge adapter (main process only)
     merged_path = phase2_output / "base_with_knowledge"
     if not args.force and is_step_completed(2, "2.3_merge", pipeline, args):
         if is_main_process():
-            print(f"\n[Step 2.3] Merged model already exists at {merged_path}")
+            print(f"\n[Step 2.4] Merged model already exists at {merged_path}")
     else:
         if is_main_process():
             if args.no_lora:
-                print(f"\n[Step 2.3] Full fine-tuning: model saved directly to {adapter_path}")
+                print(f"\n[Step 2.4] Full fine-tuning: model saved directly to {adapter_path}")
                 merged_path = adapter_path
             else:
-                print(f"\n[Step 2.3] Merging adapter into base model...")
+                # Need to clean up model before merging to free GPU memory
+                if model is not None:
+                    del model
+                if raw_model is not None:
+                    del raw_model
+                if tokenizer is not None:
+                    del tokenizer
+                raw_model = None
+                tokenizer = None
+                torch.cuda.empty_cache()
+
+                print(f"\n[Step 2.4] Merging adapter into base model...")
                 merge_adapter_into_base(
                     args.model,
                     str(adapter_path),
@@ -615,74 +923,76 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
                 )
                 print(f"Merged model saved to {merged_path}")
 
-    # Step 2.4: Test knowledge acquisition (only on rank 0)
-    eval_results = {}
-    if is_main_process():
+                # Load merged model for evaluation
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                print("Loading merged model for evaluation...")
+                raw_model = AutoModelForCausalLM.from_pretrained(
+                    str(merged_path),
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+                tokenizer = AutoTokenizer.from_pretrained(str(merged_path), trust_remote_code=True)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+
+    # Step 2.5: Test knowledge acquisition using pre-loaded model
+    if is_main_process() and raw_model is not None:
         print("\n" + "=" * 60)
-        print("Phase 2 Evaluation: Knowledge Acquisition Test")
+        print("Phase 2 After-Training Evaluation (Using Pre-loaded Model)")
         print("=" * 60)
 
-        test_model_path = str(merged_path) if merged_path.exists() else str(adapter_path)
+        train_test_samples = samples[:args.test_samples]
+        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
 
         # Test on TRAIN split
-        print("\n[Step 2.4a] Testing on TRAIN split...")
-        train_test_samples = samples[:args.test_samples]
-        print(f"  Testing on {len(train_test_samples)} samples")
-
-        print("  Before training (base model):")
-        before_train = test_qa_accuracy(
-            args.model, train_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
-        )
-        print(f"    Accuracy: {before_train['qa_accuracy']:.1f}%")
-
-        print("  After training (with knowledge):")
+        print("\n[Step 2.5a] After training QA accuracy (train split)...")
         after_train = test_qa_accuracy(
-            test_model_path, train_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
+            str(merged_path) if merged_path.exists() else str(adapter_path),
+            train_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=raw_model, tokenizer=tokenizer
         )
-        print(f"    Accuracy: {after_train['qa_accuracy']:.1f}%")
-        train_improvement = after_train['qa_accuracy'] - before_train['qa_accuracy']
-        print(f"    Improvement: {train_improvement:+.1f}%")
+        print(f"  Accuracy: {after_train['qa_accuracy']:.1f}%")
+        train_improvement = after_train['qa_accuracy'] - eval_results.get('train_before_accuracy', 0)
+        print(f"  Improvement: {train_improvement:+.1f}%")
 
         # Test on VALIDATION split
-        print("\n[Step 2.4b] Testing on VALIDATION split...")
-        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-        print(f"  Testing on {len(val_test_samples)} samples")
-
-        print("  Before training (base model):")
-        before_val = test_qa_accuracy(
-            args.model, val_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
-        )
-        print(f"    Accuracy: {before_val['qa_accuracy']:.1f}%")
-
-        print("  After training (with knowledge):")
+        print("\n[Step 2.5b] After training QA accuracy (validation split)...")
         after_val = test_qa_accuracy(
-            test_model_path, val_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
+            str(merged_path) if merged_path.exists() else str(adapter_path),
+            val_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=raw_model, tokenizer=tokenizer
         )
-        print(f"    Accuracy: {after_val['qa_accuracy']:.1f}%")
-        val_improvement = after_val['qa_accuracy'] - before_val['qa_accuracy']
-        print(f"    Improvement: {val_improvement:+.1f}%")
+        print(f"  Accuracy: {after_val['qa_accuracy']:.1f}%")
+        val_improvement = after_val['qa_accuracy'] - eval_results.get('val_before_accuracy', 0)
+        print(f"  Improvement: {val_improvement:+.1f}%")
 
         # Summary
         print("\n" + "=" * 60)
         print("Phase 2 Evaluation Summary")
         print("=" * 60)
         print(f"  QA Accuracy:")
-        print(f"    Before: Train={before_train['qa_accuracy']:.1f}%, Val={before_val['qa_accuracy']:.1f}%")
+        print(f"    Before: Train={eval_results.get('train_before_accuracy', 0):.1f}%, Val={eval_results.get('val_before_accuracy', 0):.1f}%")
         print(f"    After:  Train={after_train['qa_accuracy']:.1f}%, Val={after_val['qa_accuracy']:.1f}%")
         print(f"    Improvement: Train={train_improvement:+.1f}%, Val={val_improvement:+.1f}%")
 
-        eval_results = {
-            "train_before_accuracy": before_train['qa_accuracy'],
+        eval_results.update({
             "train_after_accuracy": after_train['qa_accuracy'],
             "train_improvement": train_improvement,
-            "val_before_accuracy": before_val['qa_accuracy'],
             "val_after_accuracy": after_val['qa_accuracy'],
             "val_improvement": val_improvement,
-        }
+        })
+
+    # Clean up model after evaluation
+    if model is not None:
+        del model
+    if raw_model is not None:
+        del raw_model
+    if tokenizer is not None:
+        del tokenizer
+    torch.cuda.empty_cache()
 
     # Record phase result
     if is_main_process():
@@ -957,8 +1267,8 @@ def main():
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Training params
-    parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument("--knowledge_epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--knowledge_epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--no_lora", action="store_true")

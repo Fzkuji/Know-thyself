@@ -760,10 +760,10 @@ def main():
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Training params
-    parser.add_argument("--epochs", type=int, default=2,
-                        help="Epochs for judgment training (default: 2 for adaptive)")
-    parser.add_argument("--knowledge_epochs", type=int, default=2,
-                        help="Epochs for knowledge training (default: 2 for adaptive)")
+    parser.add_argument("--epochs", type=int, default=15,
+                        help="Epochs for judgment training (default: 15 for adaptive)")
+    parser.add_argument("--knowledge_epochs", type=int, default=15,
+                        help="Epochs for knowledge training (default: 15 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="Learning rate (1e-4 for LoRA, 1e-5 for full fine-tuning)")

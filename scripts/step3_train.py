@@ -24,7 +24,7 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--input", type=str, default=str(project_root / "data/step2_training_data.jsonl"))
     parser.add_argument("--output_dir", type=str, default=str(project_root / "outputs/metacog"))
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4, help="1e-4 for LoRA, 1e-5 for full fine-tuning")
     parser.add_argument("--no_lora", action="store_true", help="Disable LoRA")
