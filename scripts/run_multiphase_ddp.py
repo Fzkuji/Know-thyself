@@ -63,11 +63,10 @@ def cleanup_ddp():
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
-    """Generate experiment name from parameters."""
+    """Generate experiment name from parameters (deterministic, no timestamp)."""
     model_short = model.split("/")[-1].replace("-Instruct", "")
     dataset_short = dataset.replace("/", "_")
-    timestamp = datetime.now().strftime("%m%d_%H%M")
-    return f"{model_short}_{dataset_short}_train{train_samples}_test{test_samples}_{timestamp}"
+    return f"{model_short}_{dataset_short}_train{train_samples}_test{test_samples}"
 
 
 def save_config_log(output_dir: Path, args, experiment_name: str):

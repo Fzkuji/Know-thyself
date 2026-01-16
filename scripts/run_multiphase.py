@@ -238,17 +238,14 @@ def print_phase_summary(title: str, results: dict):
 
 
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
-    """Generate experiment name from parameters."""
+    """Generate experiment name from parameters (deterministic, no timestamp)."""
     # Extract model short name (e.g., "Qwen/Qwen2.5-0.5B-Instruct" -> "Qwen2.5-0.5B")
     model_short = model.split("/")[-1].replace("-Instruct", "")
 
     # Dataset short name
     dataset_short = dataset.replace("/", "_")
 
-    # Timestamp for uniqueness
-    timestamp = datetime.now().strftime("%m%d_%H%M")
-
-    return f"{model_short}_{dataset_short}_train{train_samples}_test{test_samples}_{timestamp}"
+    return f"{model_short}_{dataset_short}_train{train_samples}_test{test_samples}"
 
 
 def save_config_log(output_dir: Path, args, experiment_name: str):
