@@ -243,6 +243,7 @@ if [ "$DDP" = "true" ]; then
     fi
     echo "Launching with torchrun (nproc_per_node=$NPROC)..."
     CMD="torchrun --nproc_per_node=$NPROC $PROJECT_ROOT/scripts/run_multiphase_ddp.py \
+        --ddp \
         --model $MODEL \
         --dataset $DATASET \
         --num_samples $TRAIN_SAMPLES \
