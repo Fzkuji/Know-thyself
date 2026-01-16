@@ -195,8 +195,8 @@ class MultiGPUInference:
         self.shutdown()
 
     def shutdown(self):
-        """Shutdown all worker processes."""
-        if hasattr(self, 'workers'):
+        """Shutdown all worker processes and release GPU memory."""
+        if hasattr(self, 'workers') and self.workers:
             # Send poison pills
             for queue in self.input_queues:
                 try:
@@ -204,13 +204,24 @@ class MultiGPUInference:
                 except:
                     pass
 
-            # Wait for workers to finish
+            # Wait for workers to finish (longer timeout for clean shutdown)
             for worker in self.workers:
-                worker.join(timeout=5.0)
+                worker.join(timeout=10.0)
                 if worker.is_alive():
                     worker.terminate()
+                    worker.join(timeout=2.0)  # Wait for termination
 
             self.workers = []
+
+            # Force CUDA memory cleanup in main process
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            # Small delay to ensure GPU memory is released
+            time.sleep(1.0)
 
     def generate_batch(self, prompts: List[str]) -> List[str]:
         """Generate one response per prompt, distributed across GPUs."""
