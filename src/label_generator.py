@@ -3,6 +3,7 @@ Label generator - create training labels for metacognition.
 """
 
 from typing import List, Dict, Optional
+from tqdm import tqdm
 
 # System prompt for metacognition assessment
 # Strict criteria: yes = 100% sure, no = 0% chance, uncertain = anything in between
@@ -76,7 +77,7 @@ def build_training_dataset(samples: List[Dict], include_reason: bool = False) ->
         List of training samples
     """
     training_data = []
-    for sample in samples:
+    for sample in tqdm(samples, desc="Building training data"):
         train_sample = build_training_sample(
             question=sample["question"],
             ability=sample["ability"],

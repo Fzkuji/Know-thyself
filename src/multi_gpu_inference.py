@@ -207,18 +207,21 @@ class MultiGPUInference:
 
         # Distribute batches to workers round-robin
         results = {}
-        pending = 0
+        total_batches = len(batches)
 
         for task_id, batch in enumerate(batches):
             worker_id = task_id % self.num_gpus
             self.input_queues[worker_id].put((task_id, batch))
-            pending += 1
 
-        # Collect results
-        while pending > 0:
+        # Collect results with progress bar
+        pbar = tqdm(total=total_batches, desc="Multi-GPU inference")
+        collected = 0
+        while collected < total_batches:
             task_id, responses = self.output_queue.get()
             results[task_id] = responses
-            pending -= 1
+            collected += 1
+            pbar.update(1)
+        pbar.close()
 
         # Reconstruct in order
         all_responses = []

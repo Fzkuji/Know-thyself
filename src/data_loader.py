@@ -4,6 +4,7 @@ Data loader for TriviaQA dataset.
 
 from datasets import load_dataset
 from typing import List, Dict, Optional
+from tqdm import tqdm
 
 
 def load_triviaqa(split: str = "train", num_samples: Optional[int] = None) -> List[Dict]:
@@ -19,8 +20,9 @@ def load_triviaqa(split: str = "train", num_samples: Optional[int] = None) -> Li
     """
     dataset = load_dataset("mandarjoshi/trivia_qa", "rc.nocontext", split=split)
 
+    total = num_samples if num_samples else len(dataset)
     samples = []
-    for i, item in enumerate(dataset):
+    for i, item in tqdm(enumerate(dataset), total=total, desc=f"Loading {split} data"):
         if num_samples and i >= num_samples:
             break
 

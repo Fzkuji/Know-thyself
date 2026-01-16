@@ -7,6 +7,7 @@ the model to actually answer questions correctly.
 
 from typing import List, Dict
 from datasets import Dataset
+from tqdm import tqdm
 
 
 # System prompt for QA training (simple and direct)
@@ -49,7 +50,7 @@ def build_qa_dataset(samples: List[Dict]) -> List[Dict]:
     """
     qa_data = []
 
-    for sample in samples:
+    for sample in tqdm(samples, desc="Building QA dataset"):
         question = sample["question"]
 
         # Use primary answer (not aliases which may contain wrong data)

@@ -5,6 +5,7 @@ Evaluator module - check if model responses are correct.
 import re
 from typing import List, Dict
 from collections import Counter
+from tqdm import tqdm
 
 
 def normalize_answer(text: str) -> str:
@@ -98,7 +99,7 @@ def evaluate_samples(samples: List[Dict]) -> List[Dict]:
         Samples with added evaluation results
     """
     results = []
-    for sample in samples:
+    for sample in tqdm(samples, desc="Evaluating responses"):
         eval_result = evaluate_responses(
             sample["responses"],
             sample.get("normalized_answers", sample["answers"])
