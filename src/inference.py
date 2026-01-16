@@ -4,7 +4,7 @@ Model inference module - batch inference for better GPU utilization.
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from typing import List, Dict
+from typing import List, Dict, Optional
 from tqdm import tqdm
 
 
@@ -16,12 +16,14 @@ class ModelInference:
         max_new_tokens: int = 64,
         temperature: float = 1.0,
         inference_batch_size: int = 16,
+        lora_path: Optional[str] = None,
     ):
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.inference_batch_size = inference_batch_size
         self.device = device
+        self.lora_path = lora_path
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -30,6 +32,14 @@ class ModelInference:
             device_map=device,
             trust_remote_code=True,
         )
+
+        # Load LoRA adapter if provided
+        if lora_path and lora_path.lower() != "none":
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, lora_path)
+            print(f"Loaded LoRA adapter from {lora_path}")
+
+        self.model.eval()
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token

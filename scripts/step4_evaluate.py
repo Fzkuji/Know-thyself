@@ -3,189 +3,170 @@ Step 4: Evaluate trained metacognition model on test set.
 
 Compares model's self-assessment (can/uncertain/cannot) with actual performance.
 Supports batch inference for better GPU utilization.
+Supports multi-GPU inference with --multi_gpu flag.
 """
 
 import argparse
 import sys
+import re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 from tqdm import tqdm
 
 from src.data_loader import load_triviaqa
 from src.evaluator import is_correct, classify_ability
 from src.label_generator import SYSTEM_PROMPT
+from src.multi_gpu_inference import create_inference
 
 
-class TrainedModelEvaluator:
-    def __init__(self, base_model: str, lora_path: str = None, inference_batch_size: int = 16, device: str = "cuda:0"):
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.padding_side = "left"  # Important for batch generation
+def parse_judgment_response(response: str) -> str:
+    """Parse judgment response to extract ability prediction."""
+    response = response.strip().lower()
 
-        base = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            torch_dtype=torch.float16,
-            device_map=device,
-        )
-        # Support evaluation without LoRA (baseline)
-        if lora_path and lora_path.lower() != "none":
-            self.model = PeftModel.from_pretrained(base, lora_path)
-        else:
-            self.model = base
-        self.model.eval()
-        self.inference_batch_size = inference_batch_size
-
-    def predict_ability(self, question: str) -> str:
-        """Ask trained model to assess its ability to answer."""
-        # Use chat template for instruction-tuned models
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"}
-        ]
-        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=32,
-                temperature=0.1,  # Low temperature for consistent prediction
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-
-        response = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:],
-            skip_special_tokens=True
-        ).strip().lower()
-
-        # Parse \boxed{} format
-        import re
-        match = re.search(r'\\boxed\{(\w+)\}', response)
-        if match:
-            answer = match.group(1).lower()
-            if answer == "yes":
-                return "can"
-            elif answer == "uncertain":
-                return "uncertain"
-            else:
-                return "cannot"
-
-        # Fallback: check keywords
-        if "yes" in response:
+    # Parse \boxed{} format
+    match = re.search(r'\\boxed\{(\w+)\}', response)
+    if match:
+        answer = match.group(1).lower()
+        if answer == "yes":
             return "can"
-        elif "uncertain" in response:
+        elif answer == "uncertain":
             return "uncertain"
         else:
             return "cannot"
 
-    def answer_questions_batch(self, questions: list, num_trials: int) -> list:
-        """
-        Get multiple answers for multiple questions using true batch generation.
+    # Fallback: check keywords
+    if "yes" in response:
+        return "can"
+    elif "uncertain" in response:
+        return "uncertain"
+    else:
+        return "cannot"
 
-        Args:
-            questions: List of questions to answer
-            num_trials: Number of responses per question
 
-        Returns:
-            List of lists, each containing num_trials responses for each question
-        """
-        # Create prompts for all questions using chat template, repeated num_trials times
-        prompts = []
-        for question in questions:
-            messages = [
-                {"role": "system", "content": "Answer the question concisely and directly."},
-                {"role": "user", "content": question}
-            ]
-            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            prompts.extend([prompt] * num_trials)
+def evaluate_with_inference(
+    model_name: str,
+    lora_path: str,
+    samples: list,
+    num_trials: int = 5,
+    inference_batch_size: int = 16,
+    multi_gpu: bool = False,
+    num_gpus: int = None,
+):
+    """
+    Evaluate metacognition accuracy using create_inference.
 
-        # Process in batches to avoid OOM
-        all_responses = []
-        batch_size = max(1, self.inference_batch_size)  # Use inference_batch_size for internal batching
+    Args:
+        model_name: Base model name
+        lora_path: Path to LoRA adapter (or "none" for baseline)
+        samples: List of samples to evaluate
+        num_trials: Number of trials per question for actual ability
+        inference_batch_size: Batch size for inference
+        multi_gpu: Use multi-GPU mode
+        num_gpus: Number of GPUs to use
 
-        for batch_start in range(0, len(prompts), batch_size):
-            batch_end = min(batch_start + batch_size, len(prompts))
-            batch_prompts = prompts[batch_start:batch_end]
+    Returns:
+        List of evaluation results
+    """
+    print(f"Creating inference with multi_gpu={multi_gpu}")
+    print(f"Model: {model_name}")
+    print(f"LoRA: {lora_path}")
 
-            # Batch tokenize
-            inputs = self.tokenizer(
-                batch_prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            ).to(self.model.device)
+    # Create inference instance (with or without LoRA)
+    inference = create_inference(
+        model_name=model_name,
+        inference_batch_size=inference_batch_size,
+        temperature=0.1,  # Low temperature for judgment prediction
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
+        lora_path=lora_path if lora_path and lora_path.lower() != "none" else None,
+    )
 
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=64,
-                    temperature=1.0,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                )
+    # Step 1: Predict judgment abilities for all samples
+    print("\nStep 1: Predicting judgment abilities...")
+    judgment_prompts = []
+    for sample in samples:
+        # Build judgment prompt
+        prompt = f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        prompt += f"<|im_start|>user\nCan you answer this question correctly?\n\nQuestion: {sample['question']}<|im_end|>\n"
+        prompt += "<|im_start|>assistant\n"
+        judgment_prompts.append(prompt)
 
-            # Decode batch responses
-            for i, output in enumerate(outputs):
-                input_len = (inputs["attention_mask"][i] == 1).sum().item()
-                response = self.tokenizer.decode(
-                    output[input_len:],
-                    skip_special_tokens=True
-                ).strip()
-                all_responses.append(response)
+    # Generate judgment predictions (one per sample, low temperature)
+    judgment_responses = []
+    for i in tqdm(range(0, len(judgment_prompts), inference_batch_size), desc="Judgment inference"):
+        batch = judgment_prompts[i:i + inference_batch_size]
+        responses = inference.generate_batch(batch)
+        judgment_responses.extend(responses)
 
-        # Group responses by question
-        results = []
-        for i in range(len(questions)):
-            start_idx = i * num_trials
-            end_idx = start_idx + num_trials
-            results.append(all_responses[start_idx:end_idx])
+    # Parse judgment predictions
+    predicted_abilities = [parse_judgment_response(r) for r in judgment_responses]
 
-        return results
+    # Clean up judgment inference
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
+    del inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    def evaluate(self, samples, num_trials: int = 5):
-        """Evaluate metacognition accuracy with batch inference."""
-        results = []
+    # Step 2: Generate QA responses to determine actual abilities
+    print("\nStep 2: Generating QA responses to determine actual abilities...")
 
-        # Process samples in batches
-        for batch_start in tqdm(range(0, len(samples), self.inference_batch_size), desc="Evaluating trained model"):
-            batch_end = min(batch_start + self.inference_batch_size, len(samples))
-            batch_samples = samples[batch_start:batch_end]
+    # Create new inference for QA (higher temperature for diversity)
+    qa_inference = create_inference(
+        model_name=model_name,
+        inference_batch_size=inference_batch_size,
+        temperature=1.0,  # Higher temperature for QA diversity
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
+        lora_path=lora_path if lora_path and lora_path.lower() != "none" else None,
+    )
 
-            # 1. Get predicted abilities for batch (still one at a time for simplicity)
-            predicted_abilities = []
-            for sample in batch_samples:
-                predicted = self.predict_ability(sample["question"])
-                predicted_abilities.append(predicted)
+    # Build QA prompts (num_trials per sample)
+    qa_prompts = []
+    for sample in samples:
+        prompt = f"<|im_start|>system\nAnswer the question concisely and directly.<|im_end|>\n"
+        prompt += f"<|im_start|>user\n{sample['question']}<|im_end|>\n"
+        prompt += "<|im_start|>assistant\n"
+        qa_prompts.extend([prompt] * num_trials)
 
-            # 2. Batch generate responses for all questions in batch
-            questions = [s["question"] for s in batch_samples]
-            all_responses = self.answer_questions_batch(questions, num_trials)
+    # Generate QA responses
+    all_qa_responses = qa_inference.generate_batch(qa_prompts)
 
-            # 3. Evaluate each sample
-            for i, sample in enumerate(batch_samples):
-                gold_answers = sample.get("normalized_answers", sample["answers"])
-                responses = all_responses[i]
-                correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
+    # Clean up QA inference
+    if hasattr(qa_inference, 'shutdown'):
+        qa_inference.shutdown()
+    del qa_inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-                accuracy = correct_count / num_trials
-                actual = classify_ability(correct_count, num_trials)
+    # Step 3: Evaluate and compile results
+    print("\nStep 3: Evaluating results...")
+    results = []
+    for i, sample in enumerate(samples):
+        # Get QA responses for this sample
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_qa_responses[start_idx:end_idx]
 
-                results.append({
-                    "question": sample["question"],
-                    "predicted": predicted_abilities[i],
-                    "actual": actual,
-                    "accuracy": accuracy,
-                    "correct_count": correct_count,
-                    "responses": responses,
-                })
+        # Evaluate correctness
+        gold_answers = sample.get("normalized_answers", sample["answers"])
+        correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
 
-        return results
+        accuracy = correct_count / num_trials
+        actual = classify_ability(correct_count, num_trials)
+
+        results.append({
+            "question": sample["question"],
+            "predicted": predicted_abilities[i],
+            "actual": actual,
+            "accuracy": accuracy,
+            "correct_count": correct_count,
+            "responses": responses,
+        })
+
+    return results
 
 
 def compute_metrics(results):
@@ -226,18 +207,33 @@ def main():
     parser.add_argument("--num_trials", type=int, default=5, help="Trials per question for actual ability")
     parser.add_argument("--split", type=str, default="validation")
     parser.add_argument("--inference_batch_size", type=int, default=16, help="Batch size for inference")
+
+    # Multi-GPU params
+    parser.add_argument("--multi_gpu", action="store_true",
+                        help="Use multi-GPU inference (one model per GPU)")
+    parser.add_argument("--num_gpus", type=int, default=None,
+                        help="Number of GPUs to use (default: all available)")
+
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
     samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
     print(f"Loaded {len(samples)} samples")
 
-    print(f"Loading trained model from {args.lora_path}")
+    print(f"\nEvaluating model: {args.model}")
+    print(f"LoRA path: {args.lora_path}")
+    print(f"Multi-GPU: {args.multi_gpu}")
     print(f"Inference batch size: {args.inference_batch_size}")
-    evaluator = TrainedModelEvaluator(args.model, args.lora_path, args.inference_batch_size)
 
-    print(f"Evaluating metacognition ({args.num_trials} trials per question)...")
-    results = evaluator.evaluate(samples, args.num_trials)
+    results = evaluate_with_inference(
+        model_name=args.model,
+        lora_path=args.lora_path,
+        samples=samples,
+        num_trials=args.num_trials,
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus,
+    )
 
     metrics = compute_metrics(results)
 

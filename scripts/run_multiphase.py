@@ -321,6 +321,10 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
     ]
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     eval_results['before_train'] = parse_eval_metrics(result.stdout)
@@ -335,6 +339,10 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "validation",
     ]
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     eval_results['before_val'] = parse_eval_metrics(result.stdout)
@@ -397,6 +405,10 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
     ]
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     eval_results['after_train'] = parse_eval_metrics(result.stdout)
@@ -411,6 +423,10 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "validation",  # Test generalization
     ]
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     eval_results['after_val'] = parse_eval_metrics(result.stdout)

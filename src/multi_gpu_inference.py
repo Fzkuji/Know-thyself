@@ -28,6 +28,7 @@ def _worker_init(
     input_queue: mp.Queue,
     output_queue: mp.Queue,
     ready_event: mp.Event,
+    lora_path: str = None,
 ):
     """
     Worker process: load model on specific GPU and process tasks from queue.
@@ -46,6 +47,13 @@ def _worker_init(
         device_map=device,
         trust_remote_code=True,
     )
+
+    # Load LoRA adapter if provided
+    if lora_path and lora_path.lower() != "none":
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, lora_path)
+        print(f"[Worker {rank}] Loaded LoRA adapter from {lora_path}")
+
     model.eval()
 
     if tokenizer.pad_token is None:
@@ -120,11 +128,13 @@ class MultiGPUInference:
         temperature: float = 1.0,
         inference_batch_size: int = 16,
         num_gpus: int = None,
+        lora_path: str = None,
     ):
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.inference_batch_size = inference_batch_size
+        self.lora_path = lora_path
 
         # Detect available GPUs
         if num_gpus is None:
@@ -136,6 +146,8 @@ class MultiGPUInference:
             raise RuntimeError("No GPUs available for multi-GPU inference")
 
         print(f"MultiGPUInference: Using {self.num_gpus} GPUs")
+        if lora_path and lora_path.lower() != "none":
+            print(f"MultiGPUInference: Loading LoRA adapter from {lora_path}")
 
         # Initialize multiprocessing
         mp.set_start_method('spawn', force=True)
@@ -161,6 +173,7 @@ class MultiGPUInference:
                     input_queue,
                     self.output_queue,
                     ready_event,
+                    lora_path,
                 )
             )
             worker.start()
@@ -286,6 +299,7 @@ def create_inference(
     temperature: float = 1.0,
     multi_gpu: bool = False,
     num_gpus: int = None,
+    lora_path: str = None,
 ):
     """
     Create inference instance.
@@ -296,6 +310,7 @@ def create_inference(
         temperature: Sampling temperature
         multi_gpu: Use multi-GPU mode (each GPU loads one model)
         num_gpus: Number of GPUs to use (None=all available)
+        lora_path: Path to LoRA adapter (optional)
 
     Returns:
         ModelInference or MultiGPUInference instance
@@ -308,6 +323,7 @@ def create_inference(
             inference_batch_size=inference_batch_size,
             temperature=temperature,
             num_gpus=num_gpus,
+            lora_path=lora_path,
         )
     else:
         # Single GPU mode: load model on cuda:0
@@ -317,6 +333,7 @@ def create_inference(
             inference_batch_size=inference_batch_size,
             temperature=temperature,
             device="cuda:0",
+            lora_path=lora_path,
         )
 
 
