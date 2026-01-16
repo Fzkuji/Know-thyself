@@ -24,18 +24,21 @@ from src.dataset_builder import load_from_jsonl, save_to_jsonl, prepare_dataset_
 from src.knowledge_trainer import build_qa_dataset
 from src.trainer import setup_model_for_training, train_metacognition
 from src.adapter_utils import merge_adapter_into_base
-from src.inference import ModelInference
+from src.multi_gpu_inference import create_inference
 from src.evaluator import is_correct
 from src.pipeline import MultiPhasePipeline
 from src.data_loader import load_triviaqa
 from tqdm import tqdm
+import torch
 
 
 def test_knowledge_acquisition(
     model_path: str,
     samples: list,
     num_trials: int = 5,
-    inference_batch_size: int = 16
+    inference_batch_size: int = 16,
+    multi_gpu: bool = False,
+    num_gpus: int = None
 ):
     """
     Test if model actually learned the knowledge.
@@ -43,11 +46,14 @@ def test_knowledge_acquisition(
     Returns accuracy on the QA samples.
     """
     print(f"\nTesting knowledge acquisition on {len(samples)} samples...")
+    print(f"Multi-GPU: {multi_gpu}")
 
-    inference = ModelInference(
+    inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
     )
 
     correct_count = 0
@@ -114,6 +120,12 @@ def main():
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None,
                         help="Experiment name for pipeline integration")
+
+    # Multi-GPU inference
+    parser.add_argument("--multi_gpu", action="store_true",
+                        help="Use multiple GPUs for inference (data parallelism)")
+    parser.add_argument("--num_gpus", type=int, default=None,
+                        help="Number of GPUs to use (default: all available)")
 
     args = parser.parse_args()
 
@@ -258,14 +270,18 @@ def main():
     print("\nBefore training (base model) on TRAIN:")
     before_train = test_knowledge_acquisition(
         args.model, train_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus
     )
     print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
 
     print("\nAfter training (with knowledge) on TRAIN:")
     after_train = test_knowledge_acquisition(
         test_model_path, train_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus
     )
     print(f"Accuracy: {after_train['accuracy']*100:.1f}% ({after_train['correct']}/{after_train['total']})")
 
@@ -280,14 +296,18 @@ def main():
     print("\nBefore training (base model) on VALIDATION:")
     before_val = test_knowledge_acquisition(
         args.model, val_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus
     )
     print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
 
     print("\nAfter training (with knowledge) on VALIDATION:")
     after_val = test_knowledge_acquisition(
         test_model_path, val_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus
     )
     print(f"Accuracy: {after_val['accuracy']*100:.1f}% ({after_val['correct']}/{after_val['total']})")
 

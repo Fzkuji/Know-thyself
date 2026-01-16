@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_loader import load_triviaqa
-from src.inference import ModelInference
+from src.multi_gpu_inference import create_inference
 from src.evaluator import evaluate_responses, classify_ability, is_correct
 from src.dataset_builder import load_from_jsonl, save_to_jsonl, prepare_dataset_for_training
 from src.label_generator import build_training_dataset, SYSTEM_PROMPT
@@ -110,7 +110,9 @@ def collect_responses_with_model(
     model_path: str,
     samples: list,
     num_trials: int = 5,
-    inference_batch_size: int = 16
+    inference_batch_size: int = 16,
+    multi_gpu: bool = False,
+    num_gpus: int = None
 ):
     """
     Collect responses using the knowledge-augmented model.
@@ -118,11 +120,14 @@ def collect_responses_with_model(
     """
     print(f"\nCollecting responses using model: {model_path}")
     print(f"Samples: {len(samples)}, Trials per sample: {num_trials}")
+    print(f"Multi-GPU: {multi_gpu}")
 
-    inference = ModelInference(
+    inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
     )
 
     # Batch inference
@@ -145,6 +150,8 @@ def collect_responses_with_model(
         results.append(result)
 
     # Clean up GPU memory
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
     del inference
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -156,7 +163,8 @@ def evaluate_judgment(
     model_path: str,
     samples: list,
     adapter_path: str = None,
-    inference_batch_size: int = 16
+    inference_batch_size: int = 16,
+    device: str = "cuda:0"
 ):
     """
     Evaluate judgment accuracy of the model.
@@ -175,7 +183,7 @@ def evaluate_judgment(
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16,
-        device_map="auto"
+        device_map=device
     )
     if adapter_path:
         model = PeftModel.from_pretrained(model, adapter_path)
@@ -288,6 +296,12 @@ def main():
     # Evaluation
     parser.add_argument("--test_samples", type=int, default=100)
 
+    # Multi-GPU params
+    parser.add_argument("--multi_gpu", action="store_true",
+                        help="Use multi-GPU inference (one model per GPU)")
+    parser.add_argument("--num_gpus", type=int, default=None,
+                        help="Number of GPUs to use (default: all available)")
+
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None)
 
@@ -329,7 +343,9 @@ def main():
         model_path=args.base_model,
         samples=original_samples,
         num_trials=args.num_trials,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus
     )
 
     # Show new ability distribution

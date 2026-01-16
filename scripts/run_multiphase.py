@@ -501,6 +501,10 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         cmd.append("--no_lora")
     if args.adaptive:
         cmd.append("--adaptive")
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 2
@@ -562,6 +566,10 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         cmd.append("--no_lora")
     if args.adaptive:
         cmd.append("--adaptive")
+    if args.multi_gpu:
+        cmd.append("--multi_gpu")
+    if args.num_gpus is not None:
+        cmd.extend(["--num_gpus", str(args.num_gpus)])
     subprocess.run(cmd, check=True)
 
     pipeline.state.current_phase = 3

@@ -21,7 +21,7 @@ from src.label_generator import SYSTEM_PROMPT
 
 
 class TrainedModelEvaluator:
-    def __init__(self, base_model: str, lora_path: str = None, inference_batch_size: int = 16):
+    def __init__(self, base_model: str, lora_path: str = None, inference_batch_size: int = 16, device: str = "cuda:0"):
         self.tokenizer = AutoTokenizer.from_pretrained(base_model)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -30,7 +30,7 @@ class TrainedModelEvaluator:
         base = AutoModelForCausalLM.from_pretrained(
             base_model,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map=device,
         )
         # Support evaluation without LoRA (baseline)
         if lora_path and lora_path.lower() != "none":
