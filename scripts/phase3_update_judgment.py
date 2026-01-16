@@ -39,7 +39,6 @@ def test_qa_accuracy(
     num_samples: int = 100,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None,
 ) -> dict:
     """
@@ -67,12 +66,11 @@ def test_qa_accuracy(
         prompt = f"Question: {sample['question']}\nAnswer:"
         all_prompts.extend([prompt] * num_trials)
 
-    # Create inference instance
+    # Create inference instance (auto multi-GPU)
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
     )
 
@@ -138,7 +136,6 @@ def collect_responses_with_model(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None
 ):
     """
@@ -147,13 +144,11 @@ def collect_responses_with_model(
     """
     print(f"\nCollecting responses using model: {model_path}")
     print(f"Samples: {len(samples)}, Trials per sample: {num_trials}")
-    print(f"Multi-GPU: {multi_gpu}")
 
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
     )
 
@@ -191,7 +186,6 @@ def evaluate_judgment(
     samples: list,
     adapter_path: str = None,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None,
 ):
     """
@@ -199,7 +193,6 @@ def evaluate_judgment(
     """
     print(f"\nEvaluating judgment accuracy on {len(samples)} samples...")
     print(f"Model: {model_path}")
-    print(f"Multi-GPU: {multi_gpu}")
     if adapter_path:
         print(f"Adapter: {adapter_path}")
 
@@ -214,12 +207,11 @@ def evaluate_judgment(
         prompt += "<|im_start|>assistant\n"
         all_prompts.append(prompt)
 
-    # Create inference instance
+    # Create inference instance (auto multi-GPU)
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=0.1,  # Low temperature for judgment
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
         lora_path=adapter_path,
     )
@@ -317,11 +309,9 @@ def main():
     # Evaluation
     parser.add_argument("--test_samples", type=int, default=100)
 
-    # Multi-GPU params
-    parser.add_argument("--multi_gpu", action="store_true",
-                        help="Use multi-GPU inference (one model per GPU)")
+    # GPU params
     parser.add_argument("--num_gpus", type=int, default=None,
-                        help="Number of GPUs to use (default: all available)")
+                        help="Number of GPUs to use for inference (default: all available)")
 
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None)
@@ -379,7 +369,6 @@ def main():
         samples=original_samples,
         num_trials=args.num_trials,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
 
@@ -542,7 +531,6 @@ def main():
         model_path=args.base_model,
         samples=train_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus,
     )
     print(f"Exact Match: {before_train_eval['exact_match_rate']*100:.1f}%")
@@ -555,7 +543,6 @@ def main():
             samples=train_test_samples,
             adapter_path=None,
             inference_batch_size=args.inference_batch_size,
-            multi_gpu=args.multi_gpu,
             num_gpus=args.num_gpus,
         )
     else:
@@ -565,7 +552,6 @@ def main():
             samples=train_test_samples,
             adapter_path=str(adapter_path),
             inference_batch_size=args.inference_batch_size,
-            multi_gpu=args.multi_gpu,
             num_gpus=args.num_gpus,
         )
     print(f"Exact Match: {after_train_eval['exact_match_rate']*100:.1f}%")
@@ -586,7 +572,6 @@ def main():
         samples=val_samples,
         num_trials=args.num_trials,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus,
     )
 
@@ -601,7 +586,6 @@ def main():
         model_path=args.base_model,
         samples=val_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus,
     )
     print(f"Exact Match: {before_val_eval['exact_match_rate']*100:.1f}%")
@@ -614,7 +598,6 @@ def main():
             samples=val_test_samples,
             adapter_path=None,
             inference_batch_size=args.inference_batch_size,
-            multi_gpu=args.multi_gpu,
             num_gpus=args.num_gpus,
         )
     else:
@@ -624,7 +607,6 @@ def main():
             samples=val_test_samples,
             adapter_path=str(adapter_path),
             inference_batch_size=args.inference_batch_size,
-            multi_gpu=args.multi_gpu,
             num_gpus=args.num_gpus,
         )
     print(f"Exact Match: {after_val_eval['exact_match_rate']*100:.1f}%")
@@ -652,14 +634,14 @@ def main():
     qa_before_train = test_qa_accuracy(
         args.base_model, split="train", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
 
     qa_before_val = test_qa_accuracy(
         args.base_model, split="validation", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
 
@@ -674,14 +656,14 @@ def main():
     qa_after_train = test_qa_accuracy(
         qa_test_model, split="train", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
 
     qa_after_val = test_qa_accuracy(
         qa_test_model, split="validation", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
 

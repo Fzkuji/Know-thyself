@@ -3,7 +3,7 @@ Step 4: Evaluate trained metacognition model on test set.
 
 Compares model's self-assessment (can/uncertain/cannot) with actual performance.
 Supports batch inference for better GPU utilization.
-Supports multi-GPU inference with --multi_gpu flag.
+Multi-GPU inference is enabled by default when multiple GPUs are available.
 """
 
 import argparse
@@ -51,7 +51,6 @@ def evaluate_with_inference(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None,
 ):
     """
@@ -63,22 +62,19 @@ def evaluate_with_inference(
         samples: List of samples to evaluate
         num_trials: Number of trials per question for actual ability
         inference_batch_size: Batch size for inference
-        multi_gpu: Use multi-GPU mode
         num_gpus: Number of GPUs to use
 
     Returns:
         List of evaluation results
     """
-    print(f"Creating inference with multi_gpu={multi_gpu}")
     print(f"Model: {model_name}")
     print(f"LoRA: {lora_path}")
 
-    # Create inference instance (with or without LoRA)
+    # Create inference instance (with or without LoRA, auto multi-GPU)
     inference = create_inference(
         model_name=model_name,
         inference_batch_size=inference_batch_size,
         temperature=0.1,  # Low temperature for judgment prediction
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
         lora_path=lora_path if lora_path and lora_path.lower() != "none" else None,
     )
@@ -111,12 +107,11 @@ def evaluate_with_inference(
     # Step 2: Generate QA responses to determine actual abilities
     print("\nStep 2: Generating QA responses to determine actual abilities...")
 
-    # Create new inference for QA (higher temperature for diversity)
+    # Create new inference for QA (higher temperature for diversity, auto multi-GPU)
     qa_inference = create_inference(
         model_name=model_name,
         inference_batch_size=inference_batch_size,
         temperature=1.0,  # Higher temperature for QA diversity
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
         lora_path=lora_path if lora_path and lora_path.lower() != "none" else None,
     )
@@ -206,11 +201,9 @@ def main():
     parser.add_argument("--split", type=str, default="validation")
     parser.add_argument("--inference_batch_size", type=int, default=16, help="Batch size for inference")
 
-    # Multi-GPU params
-    parser.add_argument("--multi_gpu", action="store_true",
-                        help="Use multi-GPU inference (one model per GPU)")
+    # GPU params
     parser.add_argument("--num_gpus", type=int, default=None,
-                        help="Number of GPUs to use (default: all available)")
+                        help="Number of GPUs to use for inference (default: all available)")
 
     args = parser.parse_args()
 
@@ -220,7 +213,6 @@ def main():
 
     print(f"\nEvaluating model: {args.model}")
     print(f"LoRA path: {args.lora_path}")
-    print(f"Multi-GPU: {args.multi_gpu}")
     print(f"Inference batch size: {args.inference_batch_size}")
 
     results = evaluate_with_inference(
@@ -229,7 +221,6 @@ def main():
         samples=samples,
         num_trials=args.num_trials,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus,
     )
 

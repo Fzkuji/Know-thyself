@@ -28,7 +28,6 @@ FORCE="false"
 EXPERIMENT=""
 PHASE=""
 SUMMARY="false"
-MULTI_GPU="false"
 NUM_GPUS=""
 
 # Help function
@@ -52,8 +51,7 @@ show_help() {
     echo "  --phase               Run specific phase only (1, 2, or 3)"
     echo "  --force               Force re-run even if phase already completed"
     echo "  --summary             Print summary of existing experiment (requires --experiment)"
-    echo "  --multi_gpu           Use multi-GPU inference (one model per GPU)"
-    echo "  --num_gpus N          Number of GPUs to use (default: all available)"
+    echo "  --num_gpus N          Number of GPUs to use for inference (default: all available)"
     echo "  --help                Show this help message"
     echo ""
     echo "Training modes:"
@@ -139,10 +137,6 @@ while [[ $# -gt 0 ]]; do
             SUMMARY="true"
             shift
             ;;
-        --multi_gpu)
-            MULTI_GPU="true"
-            shift
-            ;;
         --num_gpus)
             NUM_GPUS="$2"
             shift 2
@@ -213,13 +207,10 @@ fi
 if [ "$FORCE" = "true" ]; then
     echo "Force mode: ON (will re-run completed phases)"
 fi
-if [ "$MULTI_GPU" = "true" ]; then
-    echo "Multi-GPU: ON"
-    if [ -n "$NUM_GPUS" ]; then
-        echo "Number of GPUs: $NUM_GPUS"
-    else
-        echo "Number of GPUs: all available"
-    fi
+if [ -n "$NUM_GPUS" ]; then
+    echo "Number of GPUs: $NUM_GPUS"
+else
+    echo "Number of GPUs: all available (auto-detect)"
 fi
 echo "=============================================="
 
@@ -260,11 +251,6 @@ fi
 # Add --force if specified
 if [ "$FORCE" = "true" ]; then
     CMD="$CMD --force"
-fi
-
-# Add --multi_gpu if specified
-if [ "$MULTI_GPU" = "true" ]; then
-    CMD="$CMD --multi_gpu"
 fi
 
 # Add --num_gpus if specified

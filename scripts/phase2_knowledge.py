@@ -38,7 +38,6 @@ def test_knowledge_acquisition(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None
 ):
     """
@@ -47,7 +46,6 @@ def test_knowledge_acquisition(
     Returns accuracy on the QA samples.
     """
     print(f"\nTesting knowledge acquisition on {len(samples)} samples...")
-    print(f"Multi-GPU: {multi_gpu}")
 
     # Filter samples with valid answers
     valid_samples = []
@@ -67,12 +65,11 @@ def test_knowledge_acquisition(
         prompt = f"Question: {sample['question']}\nAnswer:"
         all_prompts.extend([prompt] * num_trials)
 
-    # Create inference instance
+    # Create inference instance (auto multi-GPU)
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
     )
 
@@ -143,11 +140,9 @@ def main():
     parser.add_argument("--experiment", type=str, default=None,
                         help="Experiment name for pipeline integration")
 
-    # Multi-GPU inference
-    parser.add_argument("--multi_gpu", action="store_true",
-                        help="Use multiple GPUs for inference (data parallelism)")
+    # GPU params
     parser.add_argument("--num_gpus", type=int, default=None,
-                        help="Number of GPUs to use (default: all available)")
+                        help="Number of GPUs to use for inference (default: all available)")
 
     # DDP training
     parser.add_argument("--ddp", action="store_true",
@@ -365,7 +360,6 @@ def main():
     before_train = test_knowledge_acquisition(
         args.model, train_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
     if is_main_process():
@@ -376,7 +370,6 @@ def main():
     after_train = test_knowledge_acquisition(
         test_model_path, train_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
     train_improvement = after_train['accuracy'] - before_train['accuracy']
@@ -396,7 +389,6 @@ def main():
     before_val = test_knowledge_acquisition(
         args.model, val_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
     if is_main_process():
@@ -407,7 +399,6 @@ def main():
     after_val = test_knowledge_acquisition(
         test_model_path, val_test_samples,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
     val_improvement = after_val['accuracy'] - before_val['accuracy']

@@ -62,7 +62,6 @@ def test_qa_accuracy(
     num_samples: int = 100,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = False,
     num_gpus: int = None,
 ) -> dict:
     """
@@ -98,14 +97,13 @@ def test_qa_accuracy(
 
     print(f"  Prompts built: {len(all_prompts)}, inference_batch_size: {inference_batch_size}")
     expected_batches = (len(all_prompts) + inference_batch_size - 1) // inference_batch_size
-    print(f"  Expected batches: {expected_batches} (multi_gpu={multi_gpu})")
+    print(f"  Expected batches: {expected_batches}")
 
-    # Create inference instance
+    # Create inference instance (auto multi-GPU)
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
     )
 
@@ -266,7 +264,6 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "no_lora": args.no_lora,
         "adaptive": args.adaptive,
         "max_steps_per_sample": args.max_steps_per_sample,
-        "multi_gpu": args.multi_gpu,
         "num_gpus": args.num_gpus,
     }
 
@@ -333,8 +330,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
     ]
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     subprocess.run(cmd, check=True)
@@ -362,8 +357,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
     ]
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     output = run_subprocess_with_live_output(cmd)
@@ -379,8 +372,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "validation",
     ]
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     output = run_subprocess_with_live_output(cmd)
@@ -391,7 +382,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     qa_before_train = test_qa_accuracy(
         args.model, split="train", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     eval_results['before_train'].update(qa_before_train)
     print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
@@ -399,7 +390,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     qa_before_val = test_qa_accuracy(
         args.model, split="validation", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     eval_results['before_val'].update(qa_before_val)
     print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
@@ -444,8 +435,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "train",
     ]
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     output = run_subprocess_with_live_output(cmd)
@@ -461,8 +450,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         "--inference_batch_size", str(args.inference_batch_size),
         "--split", "validation",  # Test generalization
     ]
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     output = run_subprocess_with_live_output(cmd)
@@ -486,7 +473,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     qa_after_train = test_qa_accuracy(
         qa_test_model, split="train", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     eval_results['after_train'].update(qa_after_train)
     print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
@@ -494,7 +481,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     qa_after_val = test_qa_accuracy(
         qa_test_model, split="validation", num_samples=args.test_samples,
         num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
+        num_gpus=args.num_gpus
     )
     eval_results['after_val'].update(qa_after_val)
     print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
@@ -554,8 +541,6 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         cmd.append("--no_lora")
     if args.adaptive:
         cmd.append("--adaptive")
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     subprocess.run(cmd, check=True)
@@ -619,8 +604,6 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
         cmd.append("--no_lora")
     if args.adaptive:
         cmd.append("--adaptive")
-    if args.multi_gpu:
-        cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
     subprocess.run(cmd, check=True)
@@ -678,11 +661,9 @@ def main():
     parser.add_argument("--max_steps_per_sample", type=int, default=10,
                         help="Max training steps per sample in adaptive mode")
 
-    # Multi-GPU params
-    parser.add_argument("--multi_gpu", action="store_true",
-                        help="Use multi-GPU inference (one model per GPU)")
+    # GPU params
     parser.add_argument("--num_gpus", type=int, default=None,
-                        help="Number of GPUs to use (default: all available)")
+                        help="Number of GPUs to use for inference (default: all available)")
 
     args = parser.parse_args()
 

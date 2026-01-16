@@ -4,8 +4,10 @@ Multi-GPU Inference Module - Parallel inference across multiple GPUs.
 Each GPU loads a separate model instance, and data is distributed across GPUs.
 This is more efficient than DDP for inference (no gradient sync needed).
 
+Multi-GPU is enabled by default when multiple GPUs are available.
+
 Usage:
-    inference = MultiGPUInference(model_name="Qwen/Qwen2.5-7B-Instruct")
+    inference = create_inference(model_name="Qwen/Qwen2.5-7B-Instruct")
     results = inference.batch_inference(samples, num_trials=5)
 """
 
@@ -299,27 +301,25 @@ def create_inference(
     model_name: str,
     inference_batch_size: int = 16,
     temperature: float = 1.0,
-    multi_gpu: bool = False,
     num_gpus: int = None,
     lora_path: str = None,
 ):
     """
-    Create inference instance.
+    Create inference instance. Always uses multi-GPU mode when multiple GPUs available.
 
     Args:
         model_name: Model to load
         inference_batch_size: Batch size for inference
         temperature: Sampling temperature
-        multi_gpu: Use multi-GPU mode (each GPU loads one model)
         num_gpus: Number of GPUs to use (None=all available)
         lora_path: Path to LoRA adapter (optional)
 
     Returns:
-        ModelInference or MultiGPUInference instance
+        MultiGPUInference instance (or single-GPU fallback if only 1 GPU)
     """
     available_gpus = torch.cuda.device_count()
 
-    if multi_gpu and available_gpus > 1:
+    if available_gpus > 1:
         return MultiGPUInference(
             model_name=model_name,
             inference_batch_size=inference_batch_size,
@@ -328,7 +328,7 @@ def create_inference(
             lora_path=lora_path,
         )
     else:
-        # Single GPU mode: load model on cuda:0
+        # Single GPU fallback
         from src.inference import ModelInference
         return ModelInference(
             model_name=model_name,

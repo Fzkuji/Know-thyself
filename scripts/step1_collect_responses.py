@@ -1,7 +1,7 @@
 """
 Step 1: Collect model responses for each question (query 5 times).
 Supports batch inference for better GPU utilization.
-Supports multi-GPU inference with --multi_gpu flag.
+Multi-GPU inference is enabled by default when multiple GPUs are available.
 """
 
 import argparse
@@ -24,7 +24,6 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--output", type=str, default=str(project_root / "data/step1_responses.jsonl"))
     parser.add_argument("--split", type=str, default="train")
-    parser.add_argument("--multi_gpu", action="store_true", help="Use multi-GPU inference")
     parser.add_argument("--num_gpus", type=int, default=None, help="Number of GPUs to use (default: all)")
     args = parser.parse_args()
 
@@ -34,11 +33,9 @@ def main():
 
     print(f"Loading model: {args.model}")
     print(f"Inference batch size: {args.inference_batch_size}")
-    print(f"Multi-GPU: {args.multi_gpu}")
     model = create_inference(
         model_name=args.model,
         inference_batch_size=args.inference_batch_size,
-        multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus,
     )
 

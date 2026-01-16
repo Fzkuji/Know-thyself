@@ -71,7 +71,6 @@ def test_qa_accuracy(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
-    multi_gpu: bool = True,
     num_gpus: int = None,
 ) -> dict:
     """
@@ -94,12 +93,11 @@ def test_qa_accuracy(
         prompt = f"Question: {sample['question']}\nAnswer:"
         all_prompts.extend([prompt] * num_trials)
 
-    # Create inference instance
+    # Create inference instance (auto multi-GPU)
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
-        multi_gpu=multi_gpu,
         num_gpus=num_gpus,
     )
 
@@ -141,7 +139,6 @@ def run_judgment_evaluation(
     num_samples: int,
     num_trials: int,
     inference_batch_size: int,
-    multi_gpu: bool = True,
     num_gpus: int = None,
 ) -> dict:
     """
@@ -159,8 +156,6 @@ def run_judgment_evaluation(
         "--inference_batch_size", str(inference_batch_size),
         "--split", split,
     ]
-    if multi_gpu:
-        cmd.append("--multi_gpu")
     if num_gpus is not None:
         cmd.extend(["--num_gpus", str(num_gpus)])
 
@@ -330,7 +325,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
                 model_name=args.model,
                 inference_batch_size=args.inference_batch_size,
                 temperature=1.0,
-                multi_gpu=True,
                 num_gpus=args.num_gpus,
             )
 
@@ -445,13 +439,13 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n[Step 1.4a] Baseline JUDGMENT evaluation (train split)...")
         eval_results['before_train'] = run_judgment_evaluation(
             args.model, "none", "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         print("\n[Step 1.4b] Baseline JUDGMENT evaluation (validation split)...")
         eval_results['before_val'] = run_judgment_evaluation(
             args.model, "none", "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         # Baseline QA
@@ -459,7 +453,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_before = test_qa_accuracy(
             args.model, val_samples, args.num_trials,
-            args.inference_batch_size, True, args.num_gpus
+            args.inference_batch_size, args.num_gpus
         )
         eval_results['before_val'].update(qa_before)
         print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
@@ -468,13 +462,13 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n[Step 1.4d] After training JUDGMENT evaluation (train split)...")
         eval_results['after_train'] = run_judgment_evaluation(
             eval_model, eval_lora, "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         print("\n[Step 1.4e] After training JUDGMENT evaluation (validation split)...")
         eval_results['after_val'] = run_judgment_evaluation(
             eval_model, eval_lora, "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         # Print summary
@@ -638,14 +632,14 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("  Before training (base model):")
         before_train = test_qa_accuracy(
             args.model, train_test_samples, args.num_trials,
-            args.inference_batch_size, True, args.num_gpus
+            args.inference_batch_size, args.num_gpus
         )
         print(f"    Accuracy: {before_train['qa_accuracy']:.1f}%")
 
         print("  After training (with knowledge):")
         after_train = test_qa_accuracy(
             test_model_path, train_test_samples, args.num_trials,
-            args.inference_batch_size, True, args.num_gpus
+            args.inference_batch_size, args.num_gpus
         )
         print(f"    Accuracy: {after_train['qa_accuracy']:.1f}%")
         train_improvement = after_train['qa_accuracy'] - before_train['qa_accuracy']
@@ -659,14 +653,14 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("  Before training (base model):")
         before_val = test_qa_accuracy(
             args.model, val_test_samples, args.num_trials,
-            args.inference_batch_size, True, args.num_gpus
+            args.inference_batch_size, args.num_gpus
         )
         print(f"    Accuracy: {before_val['qa_accuracy']:.1f}%")
 
         print("  After training (with knowledge):")
         after_val = test_qa_accuracy(
             test_model_path, val_test_samples, args.num_trials,
-            args.inference_batch_size, True, args.num_gpus
+            args.inference_batch_size, args.num_gpus
         )
         print(f"    Accuracy: {after_val['qa_accuracy']:.1f}%")
         val_improvement = after_val['qa_accuracy'] - before_val['qa_accuracy']
@@ -753,7 +747,6 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
                 model_name=base_model,
                 inference_batch_size=args.inference_batch_size,
                 temperature=1.0,
-                multi_gpu=True,
                 num_gpus=args.num_gpus,
             )
 
@@ -872,13 +865,13 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n[Step 3.4a] Final JUDGMENT evaluation (train split)...")
         eval_results['judgment_train'] = run_judgment_evaluation(
             eval_model, eval_lora, "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         print("\n[Step 3.4b] Final JUDGMENT evaluation (validation split)...")
         eval_results['judgment_val'] = run_judgment_evaluation(
             eval_model, eval_lora, "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         # QA evaluation (test if knowledge was preserved)
@@ -886,7 +879,7 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         train_samples_for_qa = original_samples[:args.test_samples]
         qa_train = test_qa_accuracy(
             eval_model if args.no_lora else base_model, train_samples_for_qa,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
         eval_results['qa_train'] = qa_train
         print(f"  QA accuracy (train): {qa_train['qa_accuracy']:.1f}%")
@@ -895,7 +888,7 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         val_samples_for_qa = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_val = test_qa_accuracy(
             eval_model if args.no_lora else base_model, val_samples_for_qa,
-            args.num_trials, args.inference_batch_size, True, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
         eval_results['qa_val'] = qa_val
         print(f"  QA accuracy (val): {qa_val['qa_accuracy']:.1f}%")
