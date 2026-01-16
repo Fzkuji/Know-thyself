@@ -33,6 +33,29 @@ from src.data_loader import load_triviaqa
 from tqdm import tqdm
 
 
+def run_subprocess_with_live_output(cmd: list) -> str:
+    """
+    Run subprocess with live output display while capturing full output.
+
+    Returns the complete stdout as a string for parsing.
+    """
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,  # Line buffered
+    )
+
+    output_lines = []
+    for line in process.stdout:
+        print(line, end='', flush=True)  # Print in real-time
+        output_lines.append(line)
+
+    process.wait()
+    return ''.join(output_lines)
+
+
 def test_qa_accuracy(
     model_path: str,
     split: str = "train",
@@ -325,9 +348,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
-    eval_results['before_train'] = parse_eval_metrics(result.stdout)
+    output = run_subprocess_with_live_output(cmd)
+    eval_results['before_train'] = parse_eval_metrics(output)
 
     print("\n[Step 1.3b] Baseline JUDGMENT on VALIDATION split...")
     cmd = [
@@ -343,9 +365,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
-    eval_results['before_val'] = parse_eval_metrics(result.stdout)
+    output = run_subprocess_with_live_output(cmd)
+    eval_results['before_val'] = parse_eval_metrics(output)
 
     # QA evaluation (baseline)
     print("\n[Step 1.3c] Baseline QA accuracy...")
@@ -409,9 +430,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
-    eval_results['after_train'] = parse_eval_metrics(result.stdout)
+    output = run_subprocess_with_live_output(cmd)
+    eval_results['after_train'] = parse_eval_metrics(output)
 
     print("\n[Step 1.5b] After training JUDGMENT on VALIDATION split...")
     cmd = [
@@ -427,9 +447,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
         cmd.append("--multi_gpu")
     if args.num_gpus is not None:
         cmd.extend(["--num_gpus", str(args.num_gpus)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
-    eval_results['after_val'] = parse_eval_metrics(result.stdout)
+    output = run_subprocess_with_live_output(cmd)
+    eval_results['after_val'] = parse_eval_metrics(output)
 
     # QA evaluation after training (to verify judgment training didn't hurt QA)
     print("\n[Step 1.5c] After training QA accuracy...")
