@@ -281,27 +281,23 @@ def create_inference(
     model_name: str,
     inference_batch_size: int = 16,
     temperature: float = 1.0,
-    multi_gpu: bool = None,
+    multi_gpu: bool = False,
     num_gpus: int = None,
 ):
     """
-    Create inference instance, automatically choosing single or multi-GPU.
+    Create inference instance.
 
     Args:
         model_name: Model to load
         inference_batch_size: Batch size for inference
         temperature: Sampling temperature
-        multi_gpu: Force multi-GPU (None=auto-detect based on GPU count)
+        multi_gpu: Use multi-GPU mode (each GPU loads one model)
         num_gpus: Number of GPUs to use (None=all available)
 
     Returns:
         ModelInference or MultiGPUInference instance
     """
     available_gpus = torch.cuda.device_count()
-
-    # Auto-detect: use multi-GPU if more than 1 GPU available
-    if multi_gpu is None:
-        multi_gpu = available_gpus > 1
 
     if multi_gpu and available_gpus > 1:
         return MultiGPUInference(
@@ -311,12 +307,13 @@ def create_inference(
             num_gpus=num_gpus,
         )
     else:
-        # Fall back to single GPU
+        # Single GPU mode: load model on cuda:0
         from src.inference import ModelInference
         return ModelInference(
             model_name=model_name,
             inference_batch_size=inference_batch_size,
             temperature=temperature,
+            device="cuda:0",
         )
 
 

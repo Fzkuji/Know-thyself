@@ -12,7 +12,7 @@ class ModelInference:
     def __init__(
         self,
         model_name: str = "Qwen/Qwen2.5-7B-Instruct",
-        device: str = "auto",
+        device: str = "cuda:0",
         max_new_tokens: int = 64,
         temperature: float = 1.0,
         inference_batch_size: int = 16,
@@ -21,6 +21,7 @@ class ModelInference:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.inference_batch_size = inference_batch_size
+        self.device = device
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
