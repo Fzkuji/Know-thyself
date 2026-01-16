@@ -7,6 +7,7 @@ This is different from judgment training - here we teach knowledge, not metacogn
 Supports two training modes:
 - Standard: Fixed epochs with batch training
 - Adaptive: Train each sample until learned (tested after each step)
+- DDP: Multi-GPU training with gradient synchronization
 
 Steps:
 2.1 Build QA training data from training samples
@@ -148,7 +149,21 @@ def main():
     parser.add_argument("--num_gpus", type=int, default=None,
                         help="Number of GPUs to use (default: all available)")
 
+    # DDP training
+    parser.add_argument("--ddp", action="store_true",
+                        help="Use DDP for multi-GPU training (launch with torchrun)")
+
     args = parser.parse_args()
+
+    # Setup DDP if enabled
+    local_rank = 0
+    if args.ddp:
+        from src.ddp_adaptive_trainer import setup_ddp, is_main_process
+        local_rank = setup_ddp()
+        if is_main_process():
+            print(f"DDP initialized with LOCAL_RANK={local_rank}")
+    else:
+        is_main_process = lambda: True
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -186,20 +201,21 @@ def main():
         print(f"    Answer: {assistant_msg}")
 
     # Step 2.2: Setup model and train
-    print(f"\nSetting up model: {args.model}")
-    print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
-    print(f"Adaptive training: {args.adaptive}")
-    model, tokenizer = setup_model_for_training(args.model, use_lora=not args.no_lora)
+    if is_main_process():
+        print(f"\nSetting up model: {args.model}")
+        print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+        print(f"Adaptive training: {args.adaptive}")
+        print(f"DDP: {args.ddp}")
+    model, tokenizer = setup_model_for_training(
+        args.model,
+        use_lora=not args.no_lora,
+        ddp=args.ddp,
+        local_rank=local_rank,
+    )
 
     adapter_path = output_dir / "knowledge"
 
     if args.adaptive:
-        # Adaptive training: train each sample until learned
-        from src.adaptive_trainer import AdaptiveKnowledgeTrainer
-
-        print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
-        print(f"Epochs: {args.epochs}")
-
         # Prepare samples with question and answers for adaptive training
         adaptive_samples = []
         for sample in qa_data:
@@ -214,32 +230,74 @@ def main():
                 "original_ability": sample.get("original_ability", ""),  # Preserve ability for filtering
             })
 
-        trainer = AdaptiveKnowledgeTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            learning_rate=args.lr,
-            max_steps_per_sample=args.max_steps_per_sample,
-        )
+        if args.ddp:
+            # DDP adaptive training
+            from src.ddp_adaptive_trainer import DDPAdaptiveKnowledgeTrainer, is_main_process, cleanup_ddp
 
-        print(f"\nTraining on {len(adaptive_samples)} samples...")
-        if args.filter_ability:
-            print(f"Filtering to abilities: {args.filter_ability}")
-        print(f"Skip already correct: {args.skip_correct}")
+            if is_main_process():
+                print(f"\nUsing DDP adaptive training")
+                print(f"Epochs: {args.epochs}")
+                print(f"Skip already correct: {args.skip_correct}")
+                if args.filter_ability:
+                    print(f"Filtering to abilities: {args.filter_ability}")
 
-        stats = trainer.train_dataset(
-            adaptive_samples,
-            num_epochs=args.epochs,
-            filter_by_ability=args.filter_ability,
-            skip_correct=args.skip_correct,
-        )
+            trainer = DDPAdaptiveKnowledgeTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                learning_rate=args.lr,
+                local_rank=local_rank,
+            )
 
-        # Save model
-        print(f"\nSaving model to {adapter_path}")
-        model.save_pretrained(str(adapter_path))
-        tokenizer.save_pretrained(str(adapter_path))
+            stats = trainer.train_dataset(
+                adaptive_samples,
+                num_epochs=args.epochs,
+                filter_by_ability=args.filter_ability,
+                skip_correct=args.skip_correct,
+            )
 
-        print(f"\nAdaptive training complete!")
-        print(f"Final stats: {stats['per_epoch'][-1]}")
+            # Save model (only main process)
+            if is_main_process():
+                print(f"\nSaving model to {adapter_path}")
+                # Get the raw model from DDP wrapper
+                raw_model = trainer.raw_model
+                raw_model.save_pretrained(str(adapter_path))
+                tokenizer.save_pretrained(str(adapter_path))
+                print(f"\nDDP adaptive training complete!")
+                print(f"Final stats: {stats['per_epoch'][-1]}")
+
+        else:
+            # Single-GPU adaptive training
+            from src.adaptive_trainer import AdaptiveKnowledgeTrainer
+
+            print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
+            print(f"Epochs: {args.epochs}")
+
+            trainer = AdaptiveKnowledgeTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                learning_rate=args.lr,
+                max_steps_per_sample=args.max_steps_per_sample,
+            )
+
+            print(f"\nTraining on {len(adaptive_samples)} samples...")
+            if args.filter_ability:
+                print(f"Filtering to abilities: {args.filter_ability}")
+            print(f"Skip already correct: {args.skip_correct}")
+
+            stats = trainer.train_dataset(
+                adaptive_samples,
+                num_epochs=args.epochs,
+                filter_by_ability=args.filter_ability,
+                skip_correct=args.skip_correct,
+            )
+
+            # Save model
+            print(f"\nSaving model to {adapter_path}")
+            model.save_pretrained(str(adapter_path))
+            tokenizer.save_pretrained(str(adapter_path))
+
+            print(f"\nAdaptive training complete!")
+            print(f"Final stats: {stats['per_epoch'][-1]}")
 
     else:
         # Standard training
@@ -262,81 +320,103 @@ def main():
             use_lora=not args.no_lora,
         )
 
-    print(f"\nKnowledge model saved to {adapter_path}")
+    # DDP cleanup and post-training steps (only on main process for DDP)
+    if args.ddp:
+        from src.ddp_adaptive_trainer import cleanup_ddp
+        # Only main process continues with evaluation and merging
+        if not is_main_process():
+            cleanup_ddp()
+            return
+
+    if is_main_process():
+        print(f"\nKnowledge model saved to {adapter_path}")
 
     # Step 2.3: Merge adapter into base model (or use full fine-tuned model directly)
     merged_path = None
     if args.no_lora:
         # Full fine-tuning: the trained model is already complete, use it directly
         merged_path = adapter_path  # adapter_path contains the full model
-        print(f"\nFull fine-tuning: Model saved directly to {merged_path}")
+        if is_main_process():
+            print(f"\nFull fine-tuning: Model saved directly to {merged_path}")
     elif not args.no_merge:
         merged_path = output_dir / "base_with_knowledge"
-        print(f"\nMerging adapter into base model...")
+        if is_main_process():
+            print(f"\nMerging adapter into base model...")
         merge_adapter_into_base(
             args.model,
             str(adapter_path),
             str(merged_path)
         )
-        print(f"Merged model saved to {merged_path}")
+        if is_main_process():
+            print(f"Merged model saved to {merged_path}")
 
     # Step 2.4: Test knowledge acquisition on both train and validation splits
     test_model_path = str(merged_path) if merged_path else args.model
 
     # Test on TRAIN split (verify model learned training data)
-    print(f"\n--- Testing knowledge acquisition on TRAIN split ---")
+    if is_main_process():
+        print(f"\n--- Testing knowledge acquisition on TRAIN split ---")
     train_test_samples = samples[:args.test_samples]  # Use subset of training data
-    print(f"Testing on {len(train_test_samples)} samples (train split)")
+    if is_main_process():
+        print(f"Testing on {len(train_test_samples)} samples (train split)")
 
-    print("\nBefore training (base model) on TRAIN:")
+    if is_main_process():
+        print("\nBefore training (base model) on TRAIN:")
     before_train = test_knowledge_acquisition(
         args.model, train_test_samples,
         inference_batch_size=args.inference_batch_size,
         multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
-    print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
+    if is_main_process():
+        print(f"Accuracy: {before_train['accuracy']*100:.1f}% ({before_train['correct']}/{before_train['total']})")
 
-    print("\nAfter training (with knowledge) on TRAIN:")
+    if is_main_process():
+        print("\nAfter training (with knowledge) on TRAIN:")
     after_train = test_knowledge_acquisition(
         test_model_path, train_test_samples,
         inference_batch_size=args.inference_batch_size,
         multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
-    print(f"Accuracy: {after_train['accuracy']*100:.1f}% ({after_train['correct']}/{after_train['total']})")
-
     train_improvement = after_train['accuracy'] - before_train['accuracy']
-    print(f"Train Improvement: {train_improvement*100:+.1f}%")
+    if is_main_process():
+        print(f"Accuracy: {after_train['accuracy']*100:.1f}% ({after_train['correct']}/{after_train['total']})")
+        print(f"Train Improvement: {train_improvement*100:+.1f}%")
 
     # Test on VALIDATION split (test generalization)
-    print(f"\n--- Testing knowledge acquisition on VALIDATION split ---")
+    if is_main_process():
+        print(f"\n--- Testing knowledge acquisition on VALIDATION split ---")
     val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-    print(f"Testing on {len(val_test_samples)} samples (validation split - held-out)")
+    if is_main_process():
+        print(f"Testing on {len(val_test_samples)} samples (validation split - held-out)")
 
-    print("\nBefore training (base model) on VALIDATION:")
+    if is_main_process():
+        print("\nBefore training (base model) on VALIDATION:")
     before_val = test_knowledge_acquisition(
         args.model, val_test_samples,
         inference_batch_size=args.inference_batch_size,
         multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
-    print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
+    if is_main_process():
+        print(f"Accuracy: {before_val['accuracy']*100:.1f}% ({before_val['correct']}/{before_val['total']})")
 
-    print("\nAfter training (with knowledge) on VALIDATION:")
+    if is_main_process():
+        print("\nAfter training (with knowledge) on VALIDATION:")
     after_val = test_knowledge_acquisition(
         test_model_path, val_test_samples,
         inference_batch_size=args.inference_batch_size,
         multi_gpu=args.multi_gpu,
         num_gpus=args.num_gpus
     )
-    print(f"Accuracy: {after_val['accuracy']*100:.1f}% ({after_val['correct']}/{after_val['total']})")
-
     val_improvement = after_val['accuracy'] - before_val['accuracy']
-    print(f"Validation Improvement: {val_improvement*100:+.1f}%")
+    if is_main_process():
+        print(f"Accuracy: {after_val['accuracy']*100:.1f}% ({after_val['correct']}/{after_val['total']})")
+        print(f"Validation Improvement: {val_improvement*100:+.1f}%")
 
     # Record to pipeline if available
-    if pipeline:
+    if pipeline and is_main_process():
         pipeline.record_phase_result(
             phase_name="phase2_knowledge",
             status="completed",
@@ -357,11 +437,16 @@ def main():
         )
         pipeline.print_summary()
 
-    print("\n" + "=" * 60)
-    print("Phase 2 (Knowledge Learning) completed!")
-    print("=" * 60)
-    if merged_path:
-        print(f"Next step: Use '{merged_path}' as base model for Phase 3")
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 2 (Knowledge Learning) completed!")
+        print("=" * 60)
+        if merged_path:
+            print(f"Next step: Use '{merged_path}' as base model for Phase 3")
+
+    # Final DDP cleanup
+    if args.ddp:
+        cleanup_ddp()
 
 
 if __name__ == "__main__":

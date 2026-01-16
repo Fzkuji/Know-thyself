@@ -4,6 +4,11 @@ Phase 3: Update Judgment with Knowledge
 After the model learns knowledge in Phase 2, re-train judgment ability.
 The model should now be more confident since it actually knows the answers.
 
+Supports training modes:
+- Standard: Fixed epochs with batch training
+- Adaptive: Train each sample until correct
+- DDP: Multi-GPU training with gradient synchronization
+
 Steps:
 3.1 Re-collect responses using base_with_knowledge model
 3.2 Build new labels (most should be "yes" now)
@@ -321,7 +326,21 @@ def main():
     # Pipeline integration
     parser.add_argument("--experiment", type=str, default=None)
 
+    # DDP training
+    parser.add_argument("--ddp", action="store_true",
+                        help="Use DDP for multi-GPU training (launch with torchrun)")
+
     args = parser.parse_args()
+
+    # Setup DDP if enabled
+    local_rank = 0
+    if args.ddp:
+        from src.ddp_adaptive_trainer import setup_ddp, is_main_process
+        local_rank = setup_ddp()
+        if is_main_process():
+            print(f"DDP initialized with LOCAL_RANK={local_rank}")
+    else:
+        is_main_process = lambda: True
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,44 +403,85 @@ def main():
     print(f"Saved {len(training_data)} training samples to {training_data_path}")
 
     # Step 3.3: Train updated judgment
-    print(f"\nSetting up model for judgment training...")
-    print(f"Base: {args.base_model}")
-    print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
-    print(f"Adaptive training: {args.adaptive}")
-    model, tokenizer = setup_model_for_training(args.base_model, use_lora=not args.no_lora)
+    if is_main_process():
+        print(f"\nSetting up model for judgment training...")
+        print(f"Base: {args.base_model}")
+        print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+        print(f"Adaptive training: {args.adaptive}")
+        print(f"DDP: {args.ddp}")
+    model, tokenizer = setup_model_for_training(
+        args.base_model,
+        use_lora=not args.no_lora,
+        ddp=args.ddp,
+        local_rank=local_rank,
+    )
 
     adapter_path = output_dir / "judgment_v2"
 
     if args.adaptive:
-        # Adaptive training for judgment
-        from src.adaptive_trainer import AdaptiveJudgmentTrainer
+        if args.ddp:
+            # DDP adaptive training
+            from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer, is_main_process, cleanup_ddp
 
-        print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
-        print(f"Epochs: {args.epochs}")
-        print(f"Skip already correct: {args.skip_correct}")
+            if is_main_process():
+                print(f"\nUsing DDP adaptive training")
+                print(f"Epochs: {args.epochs}")
+                print(f"Skip already correct: {args.skip_correct}")
 
-        trainer = AdaptiveJudgmentTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            learning_rate=args.lr,
-            max_steps_per_sample=args.max_steps_per_sample,
-        )
+            trainer = DDPAdaptiveJudgmentTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                learning_rate=args.lr,
+                local_rank=local_rank,
+            )
 
-        print(f"\nTraining on {len(training_data)} samples...")
-        stats = trainer.train_dataset(
-            training_data,
-            system_prompt=SYSTEM_PROMPT,
-            num_epochs=args.epochs,
-            skip_correct=args.skip_correct,
-        )
+            stats = trainer.train_dataset(
+                training_data,
+                system_prompt=SYSTEM_PROMPT,
+                num_epochs=args.epochs,
+                skip_correct=args.skip_correct,
+            )
 
-        # Save model
-        print(f"\nSaving model to {adapter_path}")
-        model.save_pretrained(str(adapter_path))
-        tokenizer.save_pretrained(str(adapter_path))
+            # Save model (only main process)
+            if is_main_process():
+                print(f"\nSaving model to {adapter_path}")
+                # Get the raw model from DDP wrapper
+                raw_model = trainer.raw_model
+                raw_model.save_pretrained(str(adapter_path))
+                tokenizer.save_pretrained(str(adapter_path))
+                print(f"\nDDP adaptive training complete!")
+                print(f"Final stats: {stats['per_epoch'][-1]}")
 
-        print(f"\nAdaptive training complete!")
-        print(f"Final stats: {stats['per_epoch'][-1]}")
+        else:
+            # Single-GPU adaptive training
+            from src.adaptive_trainer import AdaptiveJudgmentTrainer
+
+            print(f"\nUsing adaptive training (max {args.max_steps_per_sample} steps per sample)")
+            print(f"Epochs: {args.epochs}")
+            print(f"Skip already correct: {args.skip_correct}")
+
+            trainer = AdaptiveJudgmentTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                learning_rate=args.lr,
+                max_steps_per_sample=args.max_steps_per_sample,
+            )
+
+            print(f"\nTraining on {len(training_data)} samples...")
+            stats = trainer.train_dataset(
+                training_data,
+                system_prompt=SYSTEM_PROMPT,
+                num_epochs=args.epochs,
+                skip_correct=args.skip_correct,
+            )
+
+            # Save model
+            print(f"\nSaving model to {adapter_path}")
+            model.save_pretrained(str(adapter_path))
+            tokenizer.save_pretrained(str(adapter_path))
+
+            print(f"\nAdaptive training complete!")
+            print(f"Final stats: {stats['per_epoch'][-1]}")
 
     else:
         # Standard training
@@ -442,19 +502,30 @@ def main():
             use_lora=not args.no_lora,
         )
 
-    print(f"Judgment model saved to {adapter_path}")
+    # DDP cleanup and post-training steps (only on main process for DDP)
+    if args.ddp:
+        from src.ddp_adaptive_trainer import cleanup_ddp
+        # Only main process continues with evaluation
+        if not is_main_process():
+            cleanup_ddp()
+            return
+
+    if is_main_process():
+        print(f"Judgment model saved to {adapter_path}")
 
     # Clean up training model before evaluation
     del model
     del tokenizer
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    print("Cleaned up training model from GPU memory")
+    if is_main_process():
+        print("Cleaned up training model from GPU memory")
 
     # Step 3.4: Final evaluation on both train and validation splits
-    print("\n" + "=" * 60)
-    print("Final Evaluation")
-    print("=" * 60)
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Final Evaluation")
+        print("=" * 60)
 
     # ===== Evaluate on TRAIN split =====
     print("\n--- Evaluation on TRAIN split (verify learning) ---")
@@ -647,10 +718,15 @@ def main():
         )
         pipeline.print_summary()
 
-    print("\n" + "=" * 60)
-    print("Phase 3 (Update Judgment) completed!")
-    print("=" * 60)
-    print(f"\nFinal model: {args.base_model} + {adapter_path}")
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("Phase 3 (Update Judgment) completed!")
+        print("=" * 60)
+        print(f"\nFinal model: {args.base_model} + {adapter_path}")
+
+    # Final DDP cleanup
+    if args.ddp:
+        cleanup_ddp()
 
 
 if __name__ == "__main__":

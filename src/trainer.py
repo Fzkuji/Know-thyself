@@ -1,7 +1,9 @@
 """
 Trainer module - fine-tune model for metacognition.
+Supports DDP (DistributedDataParallel) training with Accelerate.
 """
 
+import os
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -20,6 +22,8 @@ def setup_model_for_training(
     lora_r: int = 16,
     lora_alpha: int = 32,
     lora_dropout: float = 0.05,
+    ddp: bool = False,
+    local_rank: int = None,
 ) -> tuple:
     """
     Setup model and tokenizer for training.
@@ -30,6 +34,8 @@ def setup_model_for_training(
         lora_r: LoRA rank
         lora_alpha: LoRA alpha
         lora_dropout: LoRA dropout
+        ddp: Whether to use DDP mode (each GPU loads full model)
+        local_rank: Local rank for DDP (auto-detected if not provided)
 
     Returns:
         (model, tokenizer)
@@ -38,12 +44,27 @@ def setup_model_for_training(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,  # Use bfloat16 for stability
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    if ddp:
+        # DDP mode: load model to specific GPU
+        if local_rank is None:
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        device = f"cuda:{local_rank}"
+        print(f"[DDP] Loading model on {device}")
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            trust_remote_code=True,
+        )
+    else:
+        # Single GPU or model parallel mode
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
 
     if use_lora:
         lora_config = LoraConfig(
