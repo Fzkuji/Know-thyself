@@ -31,6 +31,8 @@ from src.pipeline import MultiPhasePipeline
 from src.data_loader import load_triviaqa
 from tqdm import tqdm
 import torch
+import gc
+import time
 
 
 def test_knowledge_acquisition(
@@ -77,12 +79,15 @@ def test_knowledge_acquisition(
     print("Running batch inference...")
     all_responses = inference.generate_batch(all_prompts)
 
-    # Clean up inference
+    # Clean up inference - ensure complete release before any subsequent operations
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Evaluate results: group responses back to samples
     correct_count = 0

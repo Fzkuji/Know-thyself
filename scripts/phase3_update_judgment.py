@@ -31,6 +31,8 @@ from src.pipeline import MultiPhasePipeline
 from tqdm import tqdm
 import re
 import torch
+import gc
+import time
 
 
 def test_qa_accuracy(
@@ -78,12 +80,15 @@ def test_qa_accuracy(
     print(f"  Running batch inference...")
     all_responses = inference.generate_batch(all_prompts)
 
-    # Clean up
+    # Clean up - ensure complete release before any subsequent operations
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Evaluate results
     correct_count = 0
@@ -171,12 +176,15 @@ def collect_responses_with_model(
         result["ability"] = ability
         results.append(result)
 
-    # Clean up GPU memory
+    # Clean up GPU memory - ensure complete release
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     return results
 
@@ -220,12 +228,15 @@ def evaluate_judgment(
     print("Running batch inference...")
     all_responses = inference.generate_batch(all_prompts)
 
-    # Clean up
+    # Clean up - ensure complete release before any subsequent operations
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Parse results
     results = []

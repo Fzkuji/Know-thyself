@@ -13,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
+import gc
+import time
 from tqdm import tqdm
 
 from src.data_loader import load_triviaqa
@@ -97,12 +99,15 @@ def evaluate_with_inference(
     # Parse judgment predictions
     predicted_abilities = [parse_judgment_response(r) for r in judgment_responses]
 
-    # Clean up judgment inference
+    # Clean up judgment inference - ensure complete release before creating new instance
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Step 2: Generate QA responses to determine actual abilities
     print("\nStep 2: Generating QA responses to determine actual abilities...")
