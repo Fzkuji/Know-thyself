@@ -959,6 +959,7 @@ def main():
     # Training params
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--knowledge_epochs", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--adaptive", action="store_true", default=True)
