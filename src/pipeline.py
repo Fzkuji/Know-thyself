@@ -36,6 +36,8 @@ class PipelineState:
     current_phase: int = 0
     phases: Dict[str, PhaseResult] = field(default_factory=dict)
     config: Dict[str, Any] = field(default_factory=dict)
+    # Step-level tracking: {"phase1_judgment": {"step1_1": True, "step1_2": True, ...}}
+    completed_steps: Dict[str, Dict[str, bool]] = field(default_factory=dict)
 
     def save(self, path: str):
         """Save state to JSON."""
@@ -128,6 +130,28 @@ class MultiPhasePipeline:
     def get_phase_result(self, phase_name: str) -> Optional[PhaseResult]:
         """Get result of a specific phase."""
         return self.state.phases.get(phase_name)
+
+    def mark_step_completed(self, phase_name: str, step_name: str):
+        """Mark a step as completed within a phase."""
+        if phase_name not in self.state.completed_steps:
+            self.state.completed_steps[phase_name] = {}
+        self.state.completed_steps[phase_name][step_name] = True
+        self._save_state()
+        print(f"  [Checkpoint] Step '{step_name}' in {phase_name} marked as completed")
+
+    def is_step_completed(self, phase_name: str, step_name: str) -> bool:
+        """Check if a step has been completed."""
+        return self.state.completed_steps.get(phase_name, {}).get(step_name, False)
+
+    def clear_phase_steps(self, phase_name: str):
+        """Clear all step completion records for a phase (for re-running)."""
+        if phase_name in self.state.completed_steps:
+            del self.state.completed_steps[phase_name]
+            self._save_state()
+
+    def get_completed_steps(self, phase_name: str) -> Dict[str, bool]:
+        """Get all completed steps for a phase."""
+        return self.state.completed_steps.get(phase_name, {})
 
     def get_summary(self) -> Dict:
         """Get summary of all phases."""

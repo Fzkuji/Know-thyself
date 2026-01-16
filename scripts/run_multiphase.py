@@ -111,13 +111,18 @@ def test_qa_accuracy(
     print(f"  Running batch inference on {len(all_prompts)} prompts...")
     all_responses = inference.generate_batch(all_prompts)
 
-    # Clean up inference
+    # Clean up inference - ensure complete GPU memory release
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
+    import gc
+    gc.collect()
     import torch
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    import time
+    time.sleep(2.0)  # Wait for GPU memory to be fully released
 
     # Evaluate results: group responses back to samples
     correct_count = 0
@@ -325,7 +330,7 @@ def is_phase_completed(phase: int, pipeline: MultiPhasePipeline, args) -> bool:
     return False
 
 
-def run_phase1(args, pipeline: MultiPhasePipeline):
+def run_phase1(args, pipeline: MultiPhasePipeline, force: bool = False):
     """Run Phase 1: Initial judgment training (existing steps 1-4)."""
     print("\n" + "=" * 60)
     print("Phase 1: Initial Judgment Training")
@@ -333,176 +338,238 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
 
     project_root = Path(__file__).resolve().parent.parent
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+    phase_name = "phase1_judgment"
+
+    # Clear step records if forcing re-run
+    if force:
+        pipeline.clear_phase_steps(phase_name)
 
     # Store evaluation results for summary
     eval_results = {}
 
-    # Step 1: Collect responses (using train split)
-    print("\n[Step 1.1] Collecting responses from train split...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step1_collect_responses.py"),
-        "--model", args.model,
-        "--num_samples", str(args.num_samples),
-        "--output", str(phase_output / "responses.jsonl"),
-        "--num_trials", str(args.num_trials),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "train",
-    ]
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    subprocess.run(cmd, check=True)
-
-    # Step 2: Build dataset
-    print("\n[Step 1.2] Building judgment training data...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step2_build_dataset.py"),
-        "--input", str(phase_output / "responses.jsonl"),
-        "--output", str(phase_output / "training_data.jsonl"),
-    ]
-    subprocess.run(cmd, check=True)
-
-    # Step 3: Evaluate BEFORE training (baseline) - both Judgment and QA
-    print("\n[Step 1.3] Evaluating BASELINE (before training)...")
-
-    # Judgment evaluation
-    print("\n[Step 1.3a] Baseline JUDGMENT on TRAIN split...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", args.model,
-        "--lora_path", "none",  # No LoRA - baseline
-        "--num_samples", str(args.num_samples),  # Use train samples (same as training)
-        "--num_trials", str(args.num_trials),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "train",
-    ]
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    output = run_subprocess_with_live_output(cmd)
-    eval_results['before_train'] = parse_eval_metrics(output)
-
-    print("\n[Step 1.3b] Baseline JUDGMENT on VALIDATION split...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", args.model,
-        "--lora_path", "none",  # No LoRA - baseline
-        "--num_samples", str(args.test_samples),
-        "--num_trials", str(args.num_trials),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "validation",
-    ]
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    output = run_subprocess_with_live_output(cmd)
-    eval_results['before_val'] = parse_eval_metrics(output)
-
-    # QA evaluation (baseline)
-    print("\n[Step 1.3c] Baseline QA accuracy...")
-    qa_before_train = test_qa_accuracy(
-        args.model, split="train", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    eval_results['before_train'].update(qa_before_train)
-    print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
-
-    qa_before_val = test_qa_accuracy(
-        args.model, split="validation", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    eval_results['before_val'].update(qa_before_val)
-    print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
-
-    # Step 4: Train judgment
-    print("\n[Step 1.4] Training judgment ability...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step3_train.py"),
-        "--model", args.model,
-        "--input", str(phase_output / "training_data.jsonl"),
-        "--output_dir", str(phase_output / "judgment_v1"),
-        "--epochs", str(args.epochs),
-        "--batch_size", str(args.batch_size),
-        "--lr", str(args.lr),
-        "--max_steps_per_sample", str(args.max_steps_per_sample),
-        "--skip_correct",  # Skip samples already judged correctly
-    ]
-    if args.no_lora:
-        cmd.append("--no_lora")
-    if args.adaptive:
-        cmd.append("--adaptive")
-    subprocess.run(cmd, check=True)
-
-    # Step 5: Evaluate AFTER training on both splits
-    print("\n[Step 1.5] Evaluating AFTER training...")
-
-    # For full fine-tuning, use trained model directly; for LoRA, use base + adapter
-    if args.no_lora:
-        eval_model = str(phase_output / "judgment_v1")  # Full model saved here
-        eval_lora = "none"
+    # Step 1.1: Collect responses (using train split)
+    step_name = "step1_1_collect_responses"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print(f"\n[Step 1.1] Responses already collected, skipping...")
     else:
-        eval_model = args.model
-        eval_lora = str(phase_output / "judgment_v1")
+        print("\n[Step 1.1] Collecting responses from train split...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step1_collect_responses.py"),
+            "--model", args.model,
+            "--num_samples", str(args.num_samples),
+            "--output", str(phase_output / "responses.jsonl"),
+            "--num_trials", str(args.num_trials),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--split", "train",
+        ]
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        subprocess.run(cmd, check=True)
+        pipeline.mark_step_completed(phase_name, step_name)
 
-    print("\n[Step 1.5a] After training on TRAIN split...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", eval_model,
-        "--lora_path", eval_lora,
-        "--num_samples", str(args.num_samples),  # Use train samples (same as training)
-        "--num_trials", str(args.num_trials),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "train",
-    ]
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    output = run_subprocess_with_live_output(cmd)
-    eval_results['after_train'] = parse_eval_metrics(output)
-
-    print("\n[Step 1.5b] After training JUDGMENT on VALIDATION split...")
-    cmd = [
-        sys.executable, str(project_root / "scripts/step4_evaluate.py"),
-        "--model", eval_model,
-        "--lora_path", eval_lora,
-        "--num_samples", str(args.test_samples),
-        "--num_trials", str(args.num_trials),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--split", "validation",  # Test generalization
-    ]
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    output = run_subprocess_with_live_output(cmd)
-    eval_results['after_val'] = parse_eval_metrics(output)
-
-    # QA evaluation after training (to verify judgment training didn't hurt QA)
-    print("\n[Step 1.5c] After training QA accuracy...")
-    # For QA test, use the trained model path
-    qa_model = eval_model if args.no_lora else str(phase_output / "judgment_v1")
-    # Note: For LoRA, we need to load base + adapter for QA test
-    # But the simple approach is to test with base model since judgment LoRA
-    # shouldn't affect QA much. For full fine-tuning, use trained model.
-    if args.no_lora:
-        qa_test_model = eval_model
+    # Step 1.2: Build dataset
+    step_name = "step1_2_build_dataset"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print(f"\n[Step 1.2] Training data already built, skipping...")
     else:
-        # For LoRA judgment training, QA ability should be same as base model
-        # since we only trained judgment task. But let's test the merged model
-        # if available, otherwise test base model.
-        qa_test_model = args.model  # Base model (judgment LoRA shouldn't affect QA)
+        print("\n[Step 1.2] Building judgment training data...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step2_build_dataset.py"),
+            "--input", str(phase_output / "responses.jsonl"),
+            "--output", str(phase_output / "training_data.jsonl"),
+        ]
+        subprocess.run(cmd, check=True)
+        pipeline.mark_step_completed(phase_name, step_name)
 
-    qa_after_train = test_qa_accuracy(
-        qa_test_model, split="train", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    eval_results['after_train'].update(qa_after_train)
-    print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
+    # Step 1.3: Evaluate BEFORE training (baseline) - both Judgment and QA
+    step_name = "step1_3_eval_baseline"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print("\n[Step 1.3] Baseline evaluation already done, skipping...")
+        # Load cached results if available
+        baseline_cache = phase_output / "baseline_eval_cache.json"
+        if baseline_cache.exists():
+            import json
+            with open(baseline_cache) as f:
+                cached = json.load(f)
+                eval_results['before_train'] = cached.get('before_train', {})
+                eval_results['before_val'] = cached.get('before_val', {})
+    else:
+        print("\n[Step 1.3] Evaluating BASELINE (before training)...")
 
-    qa_after_val = test_qa_accuracy(
-        qa_test_model, split="validation", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
-        num_gpus=args.num_gpus
-    )
-    eval_results['after_val'].update(qa_after_val)
-    print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
+        # Judgment evaluation
+        print("\n[Step 1.3a] Baseline JUDGMENT on TRAIN split...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+            "--model", args.model,
+            "--lora_path", "none",  # No LoRA - baseline
+            "--num_samples", str(args.num_samples),  # Use train samples (same as training)
+            "--num_trials", str(args.num_trials),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--split", "train",
+        ]
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        output = run_subprocess_with_live_output(cmd)
+        eval_results['before_train'] = parse_eval_metrics(output)
+
+        print("\n[Step 1.3b] Baseline JUDGMENT on VALIDATION split...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+            "--model", args.model,
+            "--lora_path", "none",  # No LoRA - baseline
+            "--num_samples", str(args.test_samples),
+            "--num_trials", str(args.num_trials),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--split", "validation",
+        ]
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        output = run_subprocess_with_live_output(cmd)
+        eval_results['before_val'] = parse_eval_metrics(output)
+
+        # QA evaluation (baseline)
+        print("\n[Step 1.3c] Baseline QA accuracy...")
+        qa_before_train = test_qa_accuracy(
+            args.model, split="train", num_samples=args.test_samples,
+            num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus
+        )
+        eval_results['before_train'].update(qa_before_train)
+        print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
+
+        qa_before_val = test_qa_accuracy(
+            args.model, split="validation", num_samples=args.test_samples,
+            num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus
+        )
+        eval_results['before_val'].update(qa_before_val)
+        print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
+
+        # Cache baseline results
+        baseline_cache = phase_output / "baseline_eval_cache.json"
+        import json
+        with open(baseline_cache, 'w') as f:
+            json.dump({'before_train': eval_results['before_train'],
+                      'before_val': eval_results['before_val']}, f, indent=2)
+
+        pipeline.mark_step_completed(phase_name, step_name)
+
+    # Step 1.4: Train judgment
+    step_name = "step1_4_train_judgment"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print("\n[Step 1.4] Judgment training already done, skipping...")
+    else:
+        print("\n[Step 1.4] Training judgment ability...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step3_train.py"),
+            "--model", args.model,
+            "--input", str(phase_output / "training_data.jsonl"),
+            "--output_dir", str(phase_output / "judgment_v1"),
+            "--epochs", str(args.epochs),
+            "--batch_size", str(args.batch_size),
+            "--lr", str(args.lr),
+            "--max_steps_per_sample", str(args.max_steps_per_sample),
+            "--skip_correct",  # Skip samples already judged correctly
+        ]
+        if args.no_lora:
+            cmd.append("--no_lora")
+        if args.adaptive:
+            cmd.append("--adaptive")
+        subprocess.run(cmd, check=True)
+        pipeline.mark_step_completed(phase_name, step_name)
+
+    # Step 1.5: Evaluate AFTER training on both splits
+    step_name = "step1_5_eval_after"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print("\n[Step 1.5] Post-training evaluation already done, skipping...")
+        # Load cached results if available
+        after_cache = phase_output / "after_eval_cache.json"
+        if after_cache.exists():
+            import json
+            with open(after_cache) as f:
+                cached = json.load(f)
+                eval_results['after_train'] = cached.get('after_train', {})
+                eval_results['after_val'] = cached.get('after_val', {})
+    else:
+        print("\n[Step 1.5] Evaluating AFTER training...")
+
+        # For full fine-tuning, use trained model directly; for LoRA, use base + adapter
+        if args.no_lora:
+            eval_model = str(phase_output / "judgment_v1")  # Full model saved here
+            eval_lora = "none"
+        else:
+            eval_model = args.model
+            eval_lora = str(phase_output / "judgment_v1")
+
+        print("\n[Step 1.5a] After training on TRAIN split...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+            "--model", eval_model,
+            "--lora_path", eval_lora,
+            "--num_samples", str(args.num_samples),  # Use train samples (same as training)
+            "--num_trials", str(args.num_trials),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--split", "train",
+        ]
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        output = run_subprocess_with_live_output(cmd)
+        eval_results['after_train'] = parse_eval_metrics(output)
+
+        print("\n[Step 1.5b] After training JUDGMENT on VALIDATION split...")
+        cmd = [
+            sys.executable, str(project_root / "scripts/step4_evaluate.py"),
+            "--model", eval_model,
+            "--lora_path", eval_lora,
+            "--num_samples", str(args.test_samples),
+            "--num_trials", str(args.num_trials),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--split", "validation",  # Test generalization
+        ]
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        output = run_subprocess_with_live_output(cmd)
+        eval_results['after_val'] = parse_eval_metrics(output)
+
+        # QA evaluation after training (to verify judgment training didn't hurt QA)
+        print("\n[Step 1.5c] After training QA accuracy...")
+        # For QA test, use the trained model path
+        qa_model = eval_model if args.no_lora else str(phase_output / "judgment_v1")
+        # Note: For LoRA, we need to load base + adapter for QA test
+        # But the simple approach is to test with base model since judgment LoRA
+        # shouldn't affect QA much. For full fine-tuning, use trained model.
+        if args.no_lora:
+            qa_test_model = eval_model
+        else:
+            # For LoRA judgment training, QA ability should be same as base model
+            # since we only trained judgment task. But let's test the merged model
+            # if available, otherwise test base model.
+            qa_test_model = args.model  # Base model (judgment LoRA shouldn't affect QA)
+
+        qa_after_train = test_qa_accuracy(
+            qa_test_model, split="train", num_samples=args.test_samples,
+            num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus
+        )
+        eval_results['after_train'].update(qa_after_train)
+        print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
+
+        qa_after_val = test_qa_accuracy(
+            qa_test_model, split="validation", num_samples=args.test_samples,
+            num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+            num_gpus=args.num_gpus
+        )
+        eval_results['after_val'].update(qa_after_val)
+        print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
+
+        # Cache after-training results
+        after_cache = phase_output / "after_eval_cache.json"
+        import json
+        with open(after_cache, 'w') as f:
+            json.dump({'after_train': eval_results['after_train'],
+                      'after_val': eval_results['after_val']}, f, indent=2)
+
+        pipeline.mark_step_completed(phase_name, step_name)
 
     # Print summary table
     print_phase_summary("PHASE 1 SUMMARY: Judgment Training", eval_results)
@@ -524,7 +591,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline):
     print("\nPhase 1 completed!")
 
 
-def run_phase2(args, pipeline: MultiPhasePipeline):
+def run_phase2(args, pipeline: MultiPhasePipeline, force: bool = False):
     """Run Phase 2: Knowledge learning."""
     print("\n" + "=" * 60)
     print("Phase 2: Knowledge Learning")
@@ -533,6 +600,11 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
     project_root = Path(__file__).resolve().parent.parent
     phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
     phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
+    phase_name = "phase2_knowledge"
+
+    # Clear step records if forcing re-run
+    if force:
+        pipeline.clear_phase_steps(phase_name)
 
     # Use Phase 1 responses as input
     input_path = phase1_output / "responses.jsonl"
@@ -540,30 +612,37 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
         # Fallback to default location
         input_path = project_root / "data/step1_responses.jsonl"
 
-    cmd = [
-        sys.executable, str(project_root / "scripts/phase2_knowledge.py"),
-        "--model", args.model,
-        "--input", str(input_path),
-        "--output_dir", str(phase2_output),
-        "--epochs", str(args.knowledge_epochs),
-        "--batch_size", str(args.batch_size),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--test_samples", str(args.test_samples),
-        "--lr", str(args.lr),
-        "--max_steps_per_sample", str(args.max_steps_per_sample),
-        # Only train samples the model doesn't already know
-        "--filter_ability", "cannot", "uncertain",
-        "--skip_correct",
-        # Pass experiment name for metrics saving
-        "--experiment", pipeline.experiment_name,
-    ]
-    if args.no_lora:
-        cmd.append("--no_lora")
-    if args.adaptive:
-        cmd.append("--adaptive")
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    subprocess.run(cmd, check=True)
+    # Step 2.1-2.4: Knowledge training (handled by phase2_knowledge.py)
+    # The script handles: build QA data, train, merge, and test
+    step_name = "step2_knowledge_training"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print("\n[Phase 2] Knowledge training already done, skipping...")
+    else:
+        cmd = [
+            sys.executable, str(project_root / "scripts/phase2_knowledge.py"),
+            "--model", args.model,
+            "--input", str(input_path),
+            "--output_dir", str(phase2_output),
+            "--epochs", str(args.knowledge_epochs),
+            "--batch_size", str(args.batch_size),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--test_samples", str(args.test_samples),
+            "--lr", str(args.lr),
+            "--max_steps_per_sample", str(args.max_steps_per_sample),
+            # Only train samples the model doesn't already know
+            "--filter_ability", "cannot", "uncertain",
+            "--skip_correct",
+            # Pass experiment name for metrics saving
+            "--experiment", pipeline.experiment_name,
+        ]
+        if args.no_lora:
+            cmd.append("--no_lora")
+        if args.adaptive:
+            cmd.append("--adaptive")
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        subprocess.run(cmd, check=True)
+        pipeline.mark_step_completed(phase_name, step_name)
 
     pipeline.state.current_phase = 2
     pipeline._save_state()
@@ -571,7 +650,7 @@ def run_phase2(args, pipeline: MultiPhasePipeline):
     print("\nPhase 2 completed!")
 
 
-def run_phase3(args, pipeline: MultiPhasePipeline):
+def run_phase3(args, pipeline: MultiPhasePipeline, force: bool = False):
     """Run Phase 3: Update judgment with knowledge."""
     print("\n" + "=" * 60)
     print("Phase 3: Update Judgment with Knowledge")
@@ -581,6 +660,11 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
     phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
     phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
     phase3_output = pipeline.get_phase_output_dir("phase3_judgment")
+    phase_name = "phase3_judgment"
+
+    # Clear step records if forcing re-run
+    if force:
+        pipeline.clear_phase_steps(phase_name)
 
     # Use knowledge model from Phase 2
     # For LoRA: merged model at base_with_knowledge
@@ -604,31 +688,38 @@ def run_phase3(args, pipeline: MultiPhasePipeline):
     if not input_path.exists():
         input_path = project_root / "data/step1_responses.jsonl"
 
-    cmd = [
-        sys.executable, str(project_root / "scripts/phase3_update_judgment.py"),
-        "--base_model", str(base_model),
-        "--original_base", args.model,
-        "--input", str(input_path),
-        "--output_dir", str(phase3_output),
-        "--num_samples", str(args.num_samples),
-        "--num_trials", str(args.num_trials),
-        "--epochs", str(args.epochs),
-        "--batch_size", str(args.batch_size),
-        "--inference_batch_size", str(args.inference_batch_size),
-        "--test_samples", str(args.test_samples),
-        "--lr", str(args.lr),
-        "--max_steps_per_sample", str(args.max_steps_per_sample),
-        "--skip_correct",  # Skip samples already judged correctly
-        # Pass experiment name for metrics saving
-        "--experiment", pipeline.experiment_name,
-    ]
-    if args.no_lora:
-        cmd.append("--no_lora")
-    if args.adaptive:
-        cmd.append("--adaptive")
-    if args.num_gpus is not None:
-        cmd.extend(["--num_gpus", str(args.num_gpus)])
-    subprocess.run(cmd, check=True)
+    # Step 3.1-3.4: Judgment v2 training (handled by phase3_update_judgment.py)
+    # The script handles: collect responses, build labels, train, evaluate
+    step_name = "step3_judgment_training"
+    if pipeline.is_step_completed(phase_name, step_name) and not force:
+        print("\n[Phase 3] Judgment v2 training already done, skipping...")
+    else:
+        cmd = [
+            sys.executable, str(project_root / "scripts/phase3_update_judgment.py"),
+            "--base_model", str(base_model),
+            "--original_base", args.model,
+            "--input", str(input_path),
+            "--output_dir", str(phase3_output),
+            "--num_samples", str(args.num_samples),
+            "--num_trials", str(args.num_trials),
+            "--epochs", str(args.epochs),
+            "--batch_size", str(args.batch_size),
+            "--inference_batch_size", str(args.inference_batch_size),
+            "--test_samples", str(args.test_samples),
+            "--lr", str(args.lr),
+            "--max_steps_per_sample", str(args.max_steps_per_sample),
+            "--skip_correct",  # Skip samples already judged correctly
+            # Pass experiment name for metrics saving
+            "--experiment", pipeline.experiment_name,
+        ]
+        if args.no_lora:
+            cmd.append("--no_lora")
+        if args.adaptive:
+            cmd.append("--adaptive")
+        if args.num_gpus is not None:
+            cmd.extend(["--num_gpus", str(args.num_gpus)])
+        subprocess.run(cmd, check=True)
+        pipeline.mark_step_completed(phase_name, step_name)
 
     pipeline.state.current_phase = 3
     pipeline._save_state()
@@ -784,11 +875,11 @@ def main():
             continue
 
         if phase == 1:
-            run_phase1(args, pipeline)
+            run_phase1(args, pipeline, force=args.force)
         elif phase == 2:
-            run_phase2(args, pipeline)
+            run_phase2(args, pipeline, force=args.force)
         elif phase == 3:
-            run_phase3(args, pipeline)
+            run_phase3(args, pipeline, force=args.force)
 
     # Final summary
     print("\n" + "=" * 60)
