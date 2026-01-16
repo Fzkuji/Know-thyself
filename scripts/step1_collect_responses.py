@@ -1,6 +1,7 @@
 """
 Step 1: Collect model responses for each question (query 5 times).
 Supports batch inference for better GPU utilization.
+Supports multi-GPU inference with --multi_gpu flag.
 """
 
 import argparse
@@ -9,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_loader import load_triviaqa, format_question_prompt
-from src.inference import ModelInference
+from src.multi_gpu_inference import create_inference
 from src.evaluator import evaluate_samples
 from src.dataset_builder import save_to_jsonl
 
@@ -23,6 +24,8 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--output", type=str, default=str(project_root / "data/step1_responses.jsonl"))
     parser.add_argument("--split", type=str, default="train")
+    parser.add_argument("--multi_gpu", action="store_true", help="Use multi-GPU inference")
+    parser.add_argument("--num_gpus", type=int, default=None, help="Number of GPUs to use (default: all)")
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
@@ -31,9 +34,12 @@ def main():
 
     print(f"Loading model: {args.model}")
     print(f"Inference batch size: {args.inference_batch_size}")
-    model = ModelInference(
+    print(f"Multi-GPU: {args.multi_gpu}")
+    model = create_inference(
         model_name=args.model,
         inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus,
     )
 
     print(f"Running inference ({args.num_trials} trials per question)...")
@@ -57,6 +63,11 @@ def main():
 
     print(f"\nSaving to {args.output}")
     save_to_jsonl(results, args.output)
+
+    # Cleanup multi-GPU resources
+    if hasattr(model, 'shutdown'):
+        model.shutdown()
+
     print("Done!")
 
 
