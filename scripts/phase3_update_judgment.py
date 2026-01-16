@@ -34,46 +34,68 @@ def test_qa_accuracy(
     num_samples: int = 100,
     num_trials: int = 5,
     inference_batch_size: int = 16,
+    multi_gpu: bool = False,
+    num_gpus: int = None,
 ) -> dict:
     """
-    Test QA accuracy on a dataset split.
+    Test QA accuracy on a dataset split using batch inference.
     """
     print(f"  Testing QA accuracy on {split} split ({num_samples} samples)...")
 
     samples = load_triviaqa(split=split, num_samples=num_samples)
 
-    inference = ModelInference(
+    # Filter samples with valid answers
+    valid_samples = []
+    for sample in samples:
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        if gold_answers:
+            valid_samples.append(sample)
+
+    if not valid_samples:
+        return {"qa_accuracy": 0, "qa_correct": 0, "qa_total": 0}
+
+    print(f"  Building {len(valid_samples)} × {num_trials} = {len(valid_samples) * num_trials} prompts...")
+
+    # Build all prompts at once
+    all_prompts = []
+    for sample in valid_samples:
+        prompt = f"Question: {sample['question']}\nAnswer:"
+        all_prompts.extend([prompt] * num_trials)
+
+    # Create inference instance
+    inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
         temperature=1.0,
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
     )
 
-    correct_count = 0
-    total = 0
-
-    for sample in tqdm(samples, desc=f"QA test ({split})", leave=False):
-        question = sample["question"]
-        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-
-        if not gold_answers:
-            continue
-
-        responses = inference.generate(
-            f"Question: {question}\nAnswer:",
-            num_samples=num_trials
-        )
-
-        any_correct = any(is_correct(r, gold_answers) for r in responses)
-        if any_correct:
-            correct_count += 1
-        total += 1
-
-    accuracy = correct_count / total if total > 0 else 0
+    # Batch generate all responses at once
+    print(f"  Running batch inference...")
+    all_responses = inference.generate_batch(all_prompts)
 
     # Clean up
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
     del inference
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    # Evaluate results
+    correct_count = 0
+    for i, sample in enumerate(valid_samples):
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_responses[start_idx:end_idx]
+
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        any_correct = any(is_correct(r, gold_answers) for r in responses)
+        if any_correct:
+            correct_count += 1
+
+    total = len(valid_samples)
+    accuracy = correct_count / total if total > 0 else 0
 
     return {
         "qa_accuracy": accuracy * 100,
@@ -164,61 +186,61 @@ def evaluate_judgment(
     samples: list,
     adapter_path: str = None,
     inference_batch_size: int = 16,
-    device: str = "cuda:0"
+    multi_gpu: bool = False,
+    num_gpus: int = None,
 ):
     """
-    Evaluate judgment accuracy of the model.
+    Evaluate judgment accuracy of the model using batch inference.
     """
-    from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    import torch
-
-    print(f"\nEvaluating judgment accuracy...")
+    print(f"\nEvaluating judgment accuracy on {len(samples)} samples...")
     print(f"Model: {model_path}")
+    print(f"Multi-GPU: {multi_gpu}")
     if adapter_path:
         print(f"Adapter: {adapter_path}")
 
-    # Load model
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        device_map=device
+    # Build all judgment prompts
+    print(f"Building {len(samples)} judgment prompts...")
+    all_prompts = []
+    for sample in samples:
+        question = sample["question"]
+        # Use ChatML format directly
+        prompt = f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        prompt += f"<|im_start|>user\nCan you answer this question correctly?\n\nQuestion: {question}<|im_end|>\n"
+        prompt += "<|im_start|>assistant\n"
+        all_prompts.append(prompt)
+
+    # Create inference instance
+    inference = create_inference(
+        model_name=model_path,
+        inference_batch_size=inference_batch_size,
+        temperature=0.1,  # Low temperature for judgment
+        multi_gpu=multi_gpu,
+        num_gpus=num_gpus,
+        lora_path=adapter_path,
     )
-    if adapter_path:
-        model = PeftModel.from_pretrained(model, adapter_path)
 
-    model.eval()
+    # Batch generate all responses
+    print("Running batch inference...")
+    all_responses = inference.generate_batch(all_prompts)
 
+    # Clean up
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
+    del inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Parse results
     results = []
     abilities = ["can", "uncertain", "cannot"]
 
-    for sample in tqdm(samples, desc="Evaluating judgment"):
-        question = sample["question"]
+    for i, sample in enumerate(samples):
+        response = all_responses[i]
         actual_ability = sample["ability"]
-
-        # Build prompt using chat template
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"}
-        ]
-
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=32,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id
-            )
-
-        response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
         predicted = parse_ability_prediction(response)
 
         results.append({
-            "question": question,
+            "question": sample["question"],
             "actual": actual_ability,
             "predicted": predicted,
             "response": response
@@ -239,12 +261,6 @@ def evaluate_judgment(
     # Distribution
     pred_dist = {a: sum(1 for r in results if r["predicted"] == a) for a in abilities}
     actual_dist = {a: sum(1 for r in results if r["actual"] == a) for a in abilities}
-
-    # Clean up GPU memory
-    del model
-    del tokenizer
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     return {
         "exact_match_rate": exact_match_rate,
@@ -454,7 +470,9 @@ def main():
     before_train_eval = evaluate_judgment(
         model_path=args.base_model,
         samples=train_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus,
     )
     print(f"Exact Match: {before_train_eval['exact_match_rate']*100:.1f}%")
 
@@ -465,7 +483,9 @@ def main():
             model_path=str(adapter_path),
             samples=train_test_samples,
             adapter_path=None,
-            inference_batch_size=args.inference_batch_size
+            inference_batch_size=args.inference_batch_size,
+            multi_gpu=args.multi_gpu,
+            num_gpus=args.num_gpus,
         )
     else:
         # LoRA: use base model + adapter
@@ -473,7 +493,9 @@ def main():
             model_path=args.base_model,
             samples=train_test_samples,
             adapter_path=str(adapter_path),
-            inference_batch_size=args.inference_batch_size
+            inference_batch_size=args.inference_batch_size,
+            multi_gpu=args.multi_gpu,
+            num_gpus=args.num_gpus,
         )
     print(f"Exact Match: {after_train_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_train_eval['predicted_distribution']}")
@@ -492,7 +514,9 @@ def main():
         model_path=args.base_model,
         samples=val_samples,
         num_trials=args.num_trials,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus,
     )
 
     val_dist = {}
@@ -505,7 +529,9 @@ def main():
     before_val_eval = evaluate_judgment(
         model_path=args.base_model,
         samples=val_test_samples,
-        inference_batch_size=args.inference_batch_size
+        inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu,
+        num_gpus=args.num_gpus,
     )
     print(f"Exact Match: {before_val_eval['exact_match_rate']*100:.1f}%")
 
@@ -516,7 +542,9 @@ def main():
             model_path=str(adapter_path),
             samples=val_test_samples,
             adapter_path=None,
-            inference_batch_size=args.inference_batch_size
+            inference_batch_size=args.inference_batch_size,
+            multi_gpu=args.multi_gpu,
+            num_gpus=args.num_gpus,
         )
     else:
         # LoRA: use base model + adapter
@@ -524,7 +552,9 @@ def main():
             model_path=args.base_model,
             samples=val_test_samples,
             adapter_path=str(adapter_path),
-            inference_batch_size=args.inference_batch_size
+            inference_batch_size=args.inference_batch_size,
+            multi_gpu=args.multi_gpu,
+            num_gpus=args.num_gpus,
         )
     print(f"Exact Match: {after_val_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_val_eval['predicted_distribution']}")
@@ -550,13 +580,15 @@ def main():
     print("\nBefore judgment v2 training (knowledge model) QA:")
     qa_before_train = test_qa_accuracy(
         args.base_model, split="train", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
     )
     print(f"  Train QA: {qa_before_train['qa_accuracy']:.1f}%")
 
     qa_before_val = test_qa_accuracy(
         args.base_model, split="validation", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
     )
     print(f"  Validation QA: {qa_before_val['qa_accuracy']:.1f}%")
 
@@ -570,13 +602,15 @@ def main():
 
     qa_after_train = test_qa_accuracy(
         qa_test_model, split="train", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
     )
     print(f"  Train QA: {qa_after_train['qa_accuracy']:.1f}%")
 
     qa_after_val = test_qa_accuracy(
         qa_test_model, split="validation", num_samples=args.test_samples,
-        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size
+        num_trials=args.num_trials, inference_batch_size=args.inference_batch_size,
+        multi_gpu=args.multi_gpu, num_gpus=args.num_gpus
     )
     print(f"  Validation QA: {qa_after_val['qa_accuracy']:.1f}%")
 

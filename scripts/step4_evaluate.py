@@ -85,6 +85,7 @@ def evaluate_with_inference(
 
     # Step 1: Predict judgment abilities for all samples
     print("\nStep 1: Predicting judgment abilities...")
+    print(f"Building {len(samples)} judgment prompts...")
     judgment_prompts = []
     for sample in samples:
         # Build judgment prompt
@@ -93,12 +94,9 @@ def evaluate_with_inference(
         prompt += "<|im_start|>assistant\n"
         judgment_prompts.append(prompt)
 
-    # Generate judgment predictions (one per sample, low temperature)
-    judgment_responses = []
-    for i in tqdm(range(0, len(judgment_prompts), inference_batch_size), desc="Judgment inference"):
-        batch = judgment_prompts[i:i + inference_batch_size]
-        responses = inference.generate_batch(batch)
-        judgment_responses.extend(responses)
+    # Generate judgment predictions (batch inference for all samples)
+    print("Running batch inference for judgment...")
+    judgment_responses = inference.generate_batch(judgment_prompts)
 
     # Parse judgment predictions
     predicted_abilities = [parse_judgment_response(r) for r in judgment_responses]

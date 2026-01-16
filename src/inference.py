@@ -45,8 +45,8 @@ class ModelInference:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
 
-    def generate_batch(self, prompts: List[str]) -> List[str]:
-        """Generate one response per prompt in a batch."""
+    def _generate_single_batch(self, prompts: List[str]) -> List[str]:
+        """Generate one response per prompt in a single batch (internal use)."""
         inputs = self.tokenizer(
             prompts,
             return_tensors="pt",
@@ -73,6 +73,24 @@ class ModelInference:
             responses.append(response)
 
         return responses
+
+    def generate_batch(self, prompts: List[str]) -> List[str]:
+        """Generate one response per prompt, with automatic batching and progress bar."""
+        if len(prompts) <= self.inference_batch_size:
+            # Small batch, process directly
+            return self._generate_single_batch(prompts)
+
+        # Large batch: split and process with progress bar
+        all_responses = []
+        total_batches = (len(prompts) + self.inference_batch_size - 1) // self.inference_batch_size
+
+        for i in tqdm(range(0, len(prompts), self.inference_batch_size),
+                      total=total_batches, desc="Batch inference"):
+            batch = prompts[i:i + self.inference_batch_size]
+            responses = self._generate_single_batch(batch)
+            all_responses.extend(responses)
+
+        return all_responses
 
     def generate(self, prompt: str, num_samples: int = 1) -> List[str]:
         """Generate multiple responses for a single prompt."""
@@ -105,15 +123,10 @@ class ModelInference:
             prompt = prompt_formatter(sample)
             all_prompts.extend([prompt] * num_trials)
 
-        # Batch generate all responses
-        all_responses = []
-        total_batches = (len(all_prompts) + self.inference_batch_size - 1) // self.inference_batch_size
+        print(f"Processing {len(samples)} samples × {num_trials} trials = {len(all_prompts)} prompts")
 
-        for i in tqdm(range(0, len(all_prompts), self.inference_batch_size),
-                      total=total_batches, desc="Batch inference"):
-            batch = all_prompts[i:i + self.inference_batch_size]
-            responses = self.generate_batch(batch)
-            all_responses.extend(responses)
+        # Batch generate all responses (generate_batch handles batching internally)
+        all_responses = self.generate_batch(all_prompts)
 
         # Group responses back to samples
         results = []

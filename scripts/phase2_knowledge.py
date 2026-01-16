@@ -41,13 +41,32 @@ def test_knowledge_acquisition(
     num_gpus: int = None
 ):
     """
-    Test if model actually learned the knowledge.
+    Test if model actually learned the knowledge using batch inference.
 
     Returns accuracy on the QA samples.
     """
     print(f"\nTesting knowledge acquisition on {len(samples)} samples...")
     print(f"Multi-GPU: {multi_gpu}")
 
+    # Filter samples with valid answers
+    valid_samples = []
+    for sample in samples:
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        if gold_answers:
+            valid_samples.append(sample)
+
+    if not valid_samples:
+        return {"accuracy": 0, "correct": 0, "total": 0}
+
+    print(f"Building {len(valid_samples)} × {num_trials} = {len(valid_samples) * num_trials} prompts...")
+
+    # Build all prompts at once: samples × num_trials
+    all_prompts = []
+    for sample in valid_samples:
+        prompt = f"Question: {sample['question']}\nAnswer:"
+        all_prompts.extend([prompt] * num_trials)
+
+    # Create inference instance
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
@@ -56,28 +75,30 @@ def test_knowledge_acquisition(
         num_gpus=num_gpus,
     )
 
+    # Batch generate all responses at once
+    print("Running batch inference...")
+    all_responses = inference.generate_batch(all_prompts)
+
+    # Clean up inference
+    if hasattr(inference, 'shutdown'):
+        inference.shutdown()
+    del inference
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Evaluate results: group responses back to samples
     correct_count = 0
-    total = 0
+    for i, sample in enumerate(valid_samples):
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_responses[start_idx:end_idx]
 
-    for sample in tqdm(samples, desc="Testing knowledge"):
-        question = sample["question"]
         gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-
-        if not gold_answers:
-            continue
-
-        # Generate responses
-        responses = inference.generate(
-            f"Question: {question}\nAnswer:",
-            num_samples=num_trials
-        )
-
-        # Check if any response is correct
         any_correct = any(is_correct(r, gold_answers) for r in responses)
         if any_correct:
             correct_count += 1
-        total += 1
 
+    total = len(valid_samples)
     accuracy = correct_count / total if total > 0 else 0
     return {
         "accuracy": accuracy,

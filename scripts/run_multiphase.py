@@ -66,7 +66,9 @@ def test_qa_accuracy(
     num_gpus: int = None,
 ) -> dict:
     """
-    Test QA accuracy on a dataset split.
+    Test QA accuracy on a dataset split using batch inference.
+
+    Uses batch inference to properly utilize multi-GPU parallelism.
 
     Returns:
         dict with accuracy, correct count, and total count
@@ -75,6 +77,30 @@ def test_qa_accuracy(
 
     samples = load_triviaqa(split=split, num_samples=num_samples)
 
+    # Filter samples with valid answers
+    valid_samples = []
+    for sample in samples:
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        if gold_answers:
+            valid_samples.append(sample)
+
+    if not valid_samples:
+        return {"qa_accuracy": 0, "qa_correct": 0, "qa_total": 0}
+
+    total_prompts = len(valid_samples) * num_trials
+    print(f"  Building {len(valid_samples)} x {num_trials} = {total_prompts} prompts...")
+
+    # Build all prompts at once: samples × num_trials
+    all_prompts = []
+    for sample in valid_samples:
+        prompt = f"Question: {sample['question']}\nAnswer:"
+        all_prompts.extend([prompt] * num_trials)
+
+    print(f"  Prompts built: {len(all_prompts)}, inference_batch_size: {inference_batch_size}")
+    expected_batches = (len(all_prompts) + inference_batch_size - 1) // inference_batch_size
+    print(f"  Expected batches: {expected_batches} (multi_gpu={multi_gpu})")
+
+    # Create inference instance
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
@@ -83,37 +109,32 @@ def test_qa_accuracy(
         num_gpus=num_gpus,
     )
 
-    correct_count = 0
-    total = 0
+    # Batch generate all responses at once
+    print(f"  Running batch inference on {len(all_prompts)} prompts...")
+    all_responses = inference.generate_batch(all_prompts)
 
-    for sample in tqdm(samples, desc=f"QA test ({split})", leave=False):
-        question = sample["question"]
-        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-
-        if not gold_answers:
-            continue
-
-        # Generate responses
-        responses = inference.generate(
-            f"Question: {question}\nAnswer:",
-            num_samples=num_trials
-        )
-
-        # Check if any response is correct
-        any_correct = any(is_correct(r, gold_answers) for r in responses)
-        if any_correct:
-            correct_count += 1
-        total += 1
-
-    accuracy = correct_count / total if total > 0 else 0
-
-    # Clean up
+    # Clean up inference
     if hasattr(inference, 'shutdown'):
         inference.shutdown()
     del inference
     import torch
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    # Evaluate results: group responses back to samples
+    correct_count = 0
+    for i, sample in enumerate(valid_samples):
+        start_idx = i * num_trials
+        end_idx = start_idx + num_trials
+        responses = all_responses[start_idx:end_idx]
+
+        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+        any_correct = any(is_correct(r, gold_answers) for r in responses)
+        if any_correct:
+            correct_count += 1
+
+    total = len(valid_samples)
+    accuracy = correct_count / total if total > 0 else 0
 
     return {
         "qa_accuracy": accuracy * 100,  # As percentage

@@ -222,6 +222,8 @@ class MultiGPUInference:
         results = {}
         total_batches = len(batches)
 
+        print(f"[MultiGPU] Received {len(prompts)} prompts, batch_size={self.inference_batch_size}, total_batches={total_batches}")
+
         for task_id, batch in enumerate(batches):
             worker_id = task_id % self.num_gpus
             self.input_queues[worker_id].put((task_id, batch))
