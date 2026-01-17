@@ -106,35 +106,94 @@ def compute_confusion_matrix(pred_abilities: list, actual_abilities: list) -> di
     }
 
 
-def print_confusion_matrix(confusion: dict, title: str = "Confusion Matrix"):
+def print_confusion_matrix(confusion: dict, indent: str = ""):
     """Print confusion matrix in a nice format."""
     matrix = confusion["matrix"]
     per_class = confusion["per_class"]
     labels = ["can", "uncertain", "cannot"]
 
-    print(f"\n{title}:")
-    print("              Predicted")
-    print("              " + "".join(f"{l:>10}" for l in labels))
-    print("         +" + "-" * 30)
+    print(f"{indent}Confusion Matrix:")
+    print(f"{indent}                    Predicted")
+    print(f"{indent}                " + "".join(f"{l:>10}" for l in labels))
+    print(f"{indent}           +" + "-" * 30)
 
     for actual in labels:
-        row = f"Actual {actual:>8} |"
+        row = f"{indent}Actual {actual:>8} |"
         for pred in labels:
             count = matrix[actual][pred]
             row += f"{count:>10}"
         print(row)
 
-    print("\nPer-class metrics:")
-    print(f"{'Class':<12} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
-    print("-" * 52)
+    print(f"\n{indent}Per-class Metrics:")
+    print(f"{indent}{'Class':<12} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
+    print(f"{indent}" + "-" * 52)
     for label in labels:
         m = per_class[label]
-        print(f"{label:<12} {m['precision']:>9.1f}% {m['recall']:>9.1f}% {m['f1']:>9.1f}% {m['support']:>10}")
+        print(f"{indent}{label:<12} {m['precision']:>9.1f}% {m['recall']:>9.1f}% {m['f1']:>9.1f}% {m['support']:>10}")
+
+
+def print_stage_block(stage_name: str, train_data: dict, val_data: dict, show_qa: bool = True, show_judgment: bool = True):
+    """
+    Print a single stage block (Pre-trained Model or After Phase X Training).
+
+    Args:
+        stage_name: Name of the stage (e.g., "Pre-trained Model", "After Phase 1 Training")
+        train_data: Dict with train split metrics
+        val_data: Dict with validation split metrics
+        show_qa: Whether to show QA ability section
+        show_judgment: Whether to show Judgment ability section
+    """
+    print(f"\n  ┌─ {stage_name} " + "─" * (55 - len(stage_name)))
+    print("  │")
+
+    # QA Ability
+    if show_qa and (train_data.get('qa_accuracy') is not None or val_data.get('qa_accuracy') is not None):
+        print("  │  QA Ability:")
+        if train_data.get('qa_accuracy') is not None:
+            print(f"  │    Train:      {train_data['qa_accuracy']:5.1f}% ({train_data.get('qa_correct', '?')}/{train_data.get('qa_total', '?')})")
+        if val_data.get('qa_accuracy') is not None:
+            print(f"  │    Validation: {val_data['qa_accuracy']:5.1f}% ({val_data.get('qa_correct', '?')}/{val_data.get('qa_total', '?')})")
+        print("  │")
+
+    # Judgment Ability
+    if show_judgment and (train_data.get('exact_match_rate') is not None or val_data.get('exact_match_rate') is not None):
+        print("  │  Judgment Ability (Metacognition):")
+
+        # Train split
+        if train_data.get('exact_match_rate') is not None:
+            print(f"  │    [Train] Exact Match: {train_data['exact_match_rate']:5.1f}%")
+            if 'pred_can' in train_data:
+                print(f"  │      Predicted: can={train_data['pred_can']}, uncertain={train_data['pred_uncertain']}, cannot={train_data['pred_cannot']}")
+                print(f"  │      Actual:    can={train_data['actual_can']}, uncertain={train_data['actual_uncertain']}, cannot={train_data['actual_cannot']}")
+            if 'confusion' in train_data:
+                print("  │")
+                print_confusion_matrix(train_data['confusion'], indent="  │      ")
+
+        print("  │")
+
+        # Validation split
+        if val_data.get('exact_match_rate') is not None:
+            print(f"  │    [Validation] Exact Match: {val_data['exact_match_rate']:5.1f}%")
+            if 'pred_can' in val_data:
+                print(f"  │      Predicted: can={val_data['pred_can']}, uncertain={val_data['pred_uncertain']}, cannot={val_data['pred_cannot']}")
+                print(f"  │      Actual:    can={val_data['actual_can']}, uncertain={val_data['actual_uncertain']}, cannot={val_data['actual_cannot']}")
+            if 'confusion' in val_data:
+                print("  │")
+                print_confusion_matrix(val_data['confusion'], indent="  │      ")
+
+        print("  │")
+
+    print("  └" + "─" * 60)
 
 
 def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: str = ""):
     """
     Print standardized summary for a phase.
+
+    Format:
+    - Pre-trained Model: QA Ability + Judgment Ability with Confusion Matrix
+    - After Phase X Training: QA Ability + Judgment Ability with Confusion Matrix
+    - Comparison: improvement summary
 
     Args:
         phase: Phase number (1, 2, or 3)
@@ -147,64 +206,72 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
     print("=" * 70)
 
     if model_name:
-        print(f"\nModel: {model_name}")
+        print(f"  Model: {model_name}")
 
-    # QA Ability (if available)
-    if any(k.startswith('qa_') or 'qa_accuracy' in str(results.get(k, {})) for k in results):
-        print("\n" + "-" * 70)
-        print("  QA ABILITY (Question Answering)")
-        print("-" * 70)
+    # Extract before/after data
+    before_train = results.get('before_train', {})
+    before_val = results.get('before_val', {})
+    after_train = results.get('after_train', {})
+    after_val = results.get('after_val', {})
 
-        for split in ['train', 'val', 'before_train', 'before_val', 'after_train', 'after_val']:
-            key = split if split in results else f"{split}"
-            if key in results and isinstance(results[key], dict):
-                data = results[key]
-                if 'qa_accuracy' in data:
-                    split_name = split.replace('_', ' ').title()
-                    print(f"  {split_name:20} QA Accuracy: {data['qa_accuracy']:6.2f}% "
-                          f"({data.get('qa_correct', '?')}/{data.get('qa_total', '?')})")
+    # Determine what to show
+    has_before = bool(before_train or before_val)
+    has_after = bool(after_train or after_val)
+    has_qa = any(d.get('qa_accuracy') is not None for d in [before_train, before_val, after_train, after_val])
+    has_judgment = any(d.get('exact_match_rate') is not None for d in [before_train, before_val, after_train, after_val])
 
-    # Judgment Ability
-    if any('exact_match' in str(results.get(k, {})) for k in results):
-        print("\n" + "-" * 70)
-        print("  JUDGMENT ABILITY (Metacognition)")
-        print("-" * 70)
+    # Print Pre-trained Model block (before training)
+    if has_before:
+        print_stage_block(
+            "Pre-trained Model",
+            before_train, before_val,
+            show_qa=has_qa, show_judgment=has_judgment
+        )
 
-        for split in ['before_train', 'before_val', 'after_train', 'after_val', 'train', 'val']:
-            if split in results and isinstance(results[split], dict):
-                data = results[split]
-                if 'exact_match_rate' in data:
-                    split_name = split.replace('_', ' ').title()
-                    print(f"\n  [{split_name}]")
-                    print(f"    Exact Match Rate: {data['exact_match_rate']:.2f}%")
+    # Print After Training block
+    if has_after:
+        print_stage_block(
+            f"After Phase {phase} Training",
+            after_train, after_val,
+            show_qa=has_qa, show_judgment=has_judgment
+        )
 
-                    # Distribution comparison
-                    if 'pred_can' in data and 'actual_can' in data:
-                        print(f"    Predicted: can={data['pred_can']}, "
-                              f"uncertain={data['pred_uncertain']}, cannot={data['pred_cannot']}")
-                        print(f"    Actual:    can={data['actual_can']}, "
-                              f"uncertain={data['actual_uncertain']}, cannot={data['actual_cannot']}")
+    # Print Comparison summary
+    before_train_em = before_train.get('exact_match_rate')
+    after_train_em = after_train.get('exact_match_rate')
+    before_val_em = before_val.get('exact_match_rate')
+    after_val_em = after_val.get('exact_match_rate')
 
-                    # Confusion matrix
-                    if 'confusion' in data:
-                        print_confusion_matrix(data['confusion'], title="    Confusion Matrix")
+    before_train_qa = before_train.get('qa_accuracy')
+    after_train_qa = after_train.get('qa_accuracy')
+    before_val_qa = before_val.get('qa_accuracy')
+    after_val_qa = after_val.get('qa_accuracy')
 
-    # Improvements (if before/after available)
-    before_train = results.get('before_train', {}).get('exact_match_rate')
-    after_train = results.get('after_train', {}).get('exact_match_rate')
-    before_val = results.get('before_val', {}).get('exact_match_rate')
-    after_val = results.get('after_val', {}).get('exact_match_rate')
+    has_comparison = (before_train_em is not None and after_train_em is not None) or \
+                     (before_train_qa is not None and after_train_qa is not None)
 
-    if before_train is not None and after_train is not None:
-        print("\n" + "-" * 70)
-        print("  IMPROVEMENTS")
-        print("-" * 70)
-        train_imp = after_train - before_train
-        print(f"  Train: {before_train:.2f}% -> {after_train:.2f}% ({train_imp:+.2f}%)")
+    if has_comparison:
+        print(f"\n  ┌─ Comparison " + "─" * 47)
+        print("  │")
 
-        if before_val is not None and after_val is not None:
-            val_imp = after_val - before_val
-            print(f"  Val:   {before_val:.2f}% -> {after_val:.2f}% ({val_imp:+.2f}%)")
+        # QA comparison
+        if before_train_qa is not None and after_train_qa is not None:
+            train_qa_imp = after_train_qa - before_train_qa
+            print(f"  │  QA (Train):      {before_train_qa:5.1f}% → {after_train_qa:5.1f}% ({train_qa_imp:+5.1f}%)")
+        if before_val_qa is not None and after_val_qa is not None:
+            val_qa_imp = after_val_qa - before_val_qa
+            print(f"  │  QA (Validation): {before_val_qa:5.1f}% → {after_val_qa:5.1f}% ({val_qa_imp:+5.1f}%)")
+
+        # Judgment comparison
+        if before_train_em is not None and after_train_em is not None:
+            train_em_imp = after_train_em - before_train_em
+            print(f"  │  Judgment (Train):      {before_train_em:5.1f}% → {after_train_em:5.1f}% ({train_em_imp:+5.1f}%)")
+        if before_val_em is not None and after_val_em is not None:
+            val_em_imp = after_val_em - before_val_em
+            print(f"  │  Judgment (Validation): {before_val_em:5.1f}% → {after_val_em:5.1f}% ({val_em_imp:+5.1f}%)")
+
+        print("  │")
+        print("  └" + "─" * 60)
 
     print("\n" + "=" * 70)
 
