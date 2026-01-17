@@ -569,12 +569,12 @@ class SingleGPUJudgmentTrainer:
             train_eval = self._evaluate_samples(samples, system_prompt, use_realtime_labels, "Train Eval")
             epoch_stats["train_eval"] = train_eval
 
-            # Evaluate validation set if provided
+            # Evaluate validation set if provided (disabled - too slow)
             val_eval = None
-            if val_samples:
-                print("Evaluating validation set...")
-                val_eval = self._evaluate_samples(val_samples, system_prompt, use_realtime_labels, "Val Eval")
-                epoch_stats["val_eval"] = val_eval
+            # if val_samples:
+            #     print("Evaluating validation set...")
+            #     val_eval = self._evaluate_samples(val_samples, system_prompt, use_realtime_labels, "Val Eval")
+            #     epoch_stats["val_eval"] = val_eval
 
             stats["per_epoch"].append(epoch_stats)
 
