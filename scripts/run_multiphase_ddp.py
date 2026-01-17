@@ -1429,17 +1429,24 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
     if is_main_process() and cached_results and not is_eval_results_valid(cached_results, phase=1):
         print(f"\n[Phase 1] Cached results are invalid, re-running evaluation...")
 
-    # Unload model to free GPU memory for multi-GPU evaluation
+    # Unload model on ALL processes to free GPU memory for multi-GPU evaluation
     if is_main_process():
         print("\nUnloading model for multi-GPU evaluation...")
     model_mgr.unload()
-    torch.cuda.empty_cache()
 
+    # Reset CUDA to fully release GPU memory (important for subprocess inference)
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    # Synchronize after unloading
     if dist.is_initialized():
         dist.barrier()
 
     eval_results = {}
 
+    # Only main process runs evaluation (subprocess will use all GPUs)
+    # Non-main processes wait at barrier below
     if is_main_process():
         print("\n" + "=" * 60)
         print("Phase 1 After-Training Evaluation (Multi-GPU)")
@@ -1484,6 +1491,7 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
         all_results = {**(baseline_results or {}), **eval_results}
         print_phase_summary(1, "Initial Judgment Training", all_results, trained_model_path)
 
+    # Wait for main process to finish evaluation before continuing
     if dist.is_initialized():
         dist.barrier()
 
