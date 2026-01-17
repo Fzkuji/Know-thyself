@@ -2103,7 +2103,7 @@ def main():
             if not model_mgr.is_loaded() or model_mgr.current_path != phase2_base_model:
                 model_mgr.load(phase2_base_model)
 
-            # Get baseline from Phase 1 after-training results (no need to re-test)
+            # Get baseline from Phase 1 after-training results
             phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
             phase1_after = load_phase_results(phase1_output, "after_train_results.json")
             baseline_eval = {}
@@ -2115,8 +2115,6 @@ def main():
                         'before_train': {'qa_accuracy': after_train['qa_accuracy']},
                         'before_val': {'qa_accuracy': after_val['qa_accuracy']},
                     }
-                    if is_main_process():
-                        print(f"\n[Phase 2] Using QA baseline from Phase 1: Train={after_train['qa_accuracy']:.1f}%, Val={after_val['qa_accuracy']:.1f}%")
 
             # Training
             run_phase2_training(args, pipeline, model_mgr, qa_data)
