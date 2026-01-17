@@ -111,7 +111,6 @@ def compute_confusion_matrix(pred_abilities: list, actual_abilities: list) -> di
 def print_confusion_matrix(confusion: dict, indent: str = ""):
     """Print confusion matrix in a nice format."""
     matrix = confusion["matrix"]
-    per_class = confusion["per_class"]
     labels = ["can", "uncertain", "cannot"]
 
     print(f"{indent}Confusion Matrix:")
@@ -125,13 +124,6 @@ def print_confusion_matrix(confusion: dict, indent: str = ""):
             count = matrix[actual][pred]
             row += f"{count:>10}"
         print(row)
-
-    print(f"\n{indent}Per-class Metrics:")
-    print(f"{indent}{'Class':<12} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
-    print(f"{indent}" + "-" * 52)
-    for label in labels:
-        m = per_class[label]
-        print(f"{indent}{label:<12} {m['precision']:>9.1f}% {m['recall']:>9.1f}% {m['f1']:>9.1f}% {m['support']:>10}")
 
 
 def print_stage_block(stage_name: str, train_data: dict, val_data: dict, show_qa: bool = True, show_judgment: bool = True):
@@ -783,6 +775,7 @@ def run_judgment_evaluation(
         "--num_trials", str(num_trials),
         "--inference_batch_size", str(inference_batch_size),
         "--split", split,
+        "--print_confusion_matrix",  # Request confusion matrix output
     ]
     if num_gpus is not None:
         cmd.extend(["--num_gpus", str(num_gpus)])
@@ -825,6 +818,40 @@ def run_judgment_evaluation(
         metrics['actual_can'] = int(match.group(1))
         metrics['actual_uncertain'] = int(match.group(2))
         metrics['actual_cannot'] = int(match.group(3))
+
+    # Parse confusion matrix from output
+    # Format: "CM:can,can=X|can,uncertain=Y|..."
+    cm_match = re.search(r'CM:(.+)', output)
+    if cm_match:
+        cm_str = cm_match.group(1)
+        labels = ["can", "uncertain", "cannot"]
+        matrix = {actual: {pred: 0 for pred in labels} for actual in labels}
+        for pair in cm_str.split('|'):
+            if '=' in pair:
+                key, val = pair.split('=')
+                parts = key.split(',')
+                if len(parts) == 2:
+                    actual, pred = parts
+                    if actual in labels and pred in labels:
+                        matrix[actual][pred] = int(val)
+
+        # Compute per-class metrics
+        per_class = {}
+        for label in labels:
+            tp = matrix[label][label]
+            fp = sum(matrix[other][label] for other in labels if other != label)
+            fn = sum(matrix[label][other] for other in labels if other != label)
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            per_class[label] = {
+                "precision": precision * 100,
+                "recall": recall * 100,
+                "f1": f1 * 100,
+                "support": sum(matrix[label].values()),
+            }
+
+        metrics['confusion'] = {"matrix": matrix, "per_class": per_class}
 
     return metrics
 
