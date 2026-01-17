@@ -25,7 +25,7 @@ import sys
 import os
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
@@ -51,11 +51,12 @@ def is_main_process():
 
 
 def setup_ddp():
-    """Initialize distributed training."""
+    """Initialize distributed training with extended timeout for evaluation phases."""
     if "LOCAL_RANK" in os.environ:
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        # Set very long timeout (24 hours) to allow single-rank evaluation without timeout
+        dist.init_process_group(backend="nccl", timeout=timedelta(hours=24))
         return local_rank
     return 0
 
@@ -1414,6 +1415,15 @@ def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             return cached_results
 
     eval_results = {}
+
+    # IMPORTANT: Set model to eval mode on ALL ranks before evaluation
+    # This prevents collective operation mismatches when only rank 0 does inference
+    if model_mgr.raw_model is not None:
+        model_mgr.raw_model.eval()
+
+    # Sync all ranks before single-rank evaluation begins
+    if dist.is_initialized():
+        dist.barrier()
 
     if is_main_process() and model_mgr.raw_model is not None:
         print("\n" + "=" * 60)
