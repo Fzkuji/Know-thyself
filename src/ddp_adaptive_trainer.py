@@ -203,6 +203,10 @@ class DDPAdaptiveKnowledgeTrainer:
                     is_correct_now = False
                     sample = None
 
+                # CRITICAL: Sync all GPUs after inference test before DDP forward pass
+                if dist.is_initialized():
+                    dist.barrier()
+
                 # Synchronize: all GPUs need to participate in forward/backward
                 # even if they don't have a sample (use dummy forward)
                 self.model.train()
@@ -456,6 +460,10 @@ class DDPAdaptiveJudgmentTrainer:
                     is_correct_now = False
                     sample = None
                     ability = ""
+
+                # CRITICAL: Sync all GPUs after inference test before DDP forward pass
+                if dist.is_initialized():
+                    dist.barrier()
 
                 self.model.train()
                 self.optimizer.zero_grad()
