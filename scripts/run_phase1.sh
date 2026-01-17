@@ -122,6 +122,19 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         log "Epoch $epoch already completed, skipping to evaluation"
         CURRENT_MODEL="$EPOCH_OUTPUT"
     else
+        # Evaluate BEFORE training this epoch (to see starting point)
+        log "Pre-training evaluation for epoch $epoch..."
+        python scripts/step4_evaluate.py \
+            --model "$CURRENT_MODEL" \
+            --lora_path none \
+            --split train \
+            --num_samples "$TEST_SAMPLES" \
+            --num_trials "$NUM_TRIALS" \
+            --inference_batch_size "$BATCH_SIZE" \
+            --num_gpus "$NUM_GPUS" \
+            --print_confusion_matrix \
+            2>&1 | tee "$EPOCH_OUTPUT/eval_before_train.log"
+
         # Train one epoch
         log "Training epoch $epoch..."
         # Use set -o pipefail to catch errors through pipe
