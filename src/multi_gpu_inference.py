@@ -85,11 +85,13 @@ def _worker_init(
             ).to(device)
 
             with torch.no_grad():
+                # Use greedy decoding when temperature=0, sampling otherwise
+                do_sample = temperature > 0
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    do_sample=True,
+                    temperature=temperature if do_sample else None,
+                    do_sample=do_sample,
                     pad_token_id=tokenizer.pad_token_id,
                 )
 
