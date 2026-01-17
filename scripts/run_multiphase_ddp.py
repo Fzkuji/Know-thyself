@@ -66,6 +66,182 @@ def cleanup_ddp():
         dist.destroy_process_group()
 
 
+# ============== Phase Results: Standardized Output ==============
+
+def compute_confusion_matrix(pred_abilities: list, actual_abilities: list) -> dict:
+    """
+    Compute 3x3 confusion matrix for judgment evaluation.
+
+    Returns:
+        Dict with confusion matrix and per-class metrics
+    """
+    labels = ["can", "uncertain", "cannot"]
+    matrix = {actual: {pred: 0 for pred in labels} for actual in labels}
+
+    for pred, actual in zip(pred_abilities, actual_abilities):
+        if actual in matrix and pred in labels:
+            matrix[actual][pred] += 1
+
+    # Compute per-class metrics
+    per_class = {}
+    for label in labels:
+        tp = matrix[label][label]
+        fp = sum(matrix[other][label] for other in labels if other != label)
+        fn = sum(matrix[label][other] for other in labels if other != label)
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+        per_class[label] = {
+            "precision": precision * 100,
+            "recall": recall * 100,
+            "f1": f1 * 100,
+            "support": sum(matrix[label].values()),
+        }
+
+    return {
+        "matrix": matrix,
+        "per_class": per_class,
+    }
+
+
+def print_confusion_matrix(confusion: dict, title: str = "Confusion Matrix"):
+    """Print confusion matrix in a nice format."""
+    matrix = confusion["matrix"]
+    per_class = confusion["per_class"]
+    labels = ["can", "uncertain", "cannot"]
+
+    print(f"\n{title}:")
+    print("              Predicted")
+    print("              " + "".join(f"{l:>10}" for l in labels))
+    print("         +" + "-" * 30)
+
+    for actual in labels:
+        row = f"Actual {actual:>8} |"
+        for pred in labels:
+            count = matrix[actual][pred]
+            row += f"{count:>10}"
+        print(row)
+
+    print("\nPer-class metrics:")
+    print(f"{'Class':<12} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
+    print("-" * 52)
+    for label in labels:
+        m = per_class[label]
+        print(f"{label:<12} {m['precision']:>9.1f}% {m['recall']:>9.1f}% {m['f1']:>9.1f}% {m['support']:>10}")
+
+
+def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: str = ""):
+    """
+    Print standardized summary for a phase.
+
+    Args:
+        phase: Phase number (1, 2, or 3)
+        phase_name: Human-readable phase name
+        results: Dict containing all evaluation results
+        model_name: Model path/name for display
+    """
+    print("\n" + "=" * 70)
+    print(f"  PHASE {phase} SUMMARY: {phase_name}")
+    print("=" * 70)
+
+    if model_name:
+        print(f"\nModel: {model_name}")
+
+    # QA Ability (if available)
+    if any(k.startswith('qa_') or 'qa_accuracy' in str(results.get(k, {})) for k in results):
+        print("\n" + "-" * 70)
+        print("  QA ABILITY (Question Answering)")
+        print("-" * 70)
+
+        for split in ['train', 'val', 'before_train', 'before_val', 'after_train', 'after_val']:
+            key = split if split in results else f"{split}"
+            if key in results and isinstance(results[key], dict):
+                data = results[key]
+                if 'qa_accuracy' in data:
+                    split_name = split.replace('_', ' ').title()
+                    print(f"  {split_name:20} QA Accuracy: {data['qa_accuracy']:6.2f}% "
+                          f"({data.get('qa_correct', '?')}/{data.get('qa_total', '?')})")
+
+    # Judgment Ability
+    if any('exact_match' in str(results.get(k, {})) for k in results):
+        print("\n" + "-" * 70)
+        print("  JUDGMENT ABILITY (Metacognition)")
+        print("-" * 70)
+
+        for split in ['before_train', 'before_val', 'after_train', 'after_val', 'train', 'val']:
+            if split in results and isinstance(results[split], dict):
+                data = results[split]
+                if 'exact_match_rate' in data:
+                    split_name = split.replace('_', ' ').title()
+                    print(f"\n  [{split_name}]")
+                    print(f"    Exact Match Rate: {data['exact_match_rate']:.2f}%")
+
+                    # Distribution comparison
+                    if 'pred_can' in data and 'actual_can' in data:
+                        print(f"    Predicted: can={data['pred_can']}, "
+                              f"uncertain={data['pred_uncertain']}, cannot={data['pred_cannot']}")
+                        print(f"    Actual:    can={data['actual_can']}, "
+                              f"uncertain={data['actual_uncertain']}, cannot={data['actual_cannot']}")
+
+                    # Confusion matrix
+                    if 'confusion' in data:
+                        print_confusion_matrix(data['confusion'], title="    Confusion Matrix")
+
+    # Improvements (if before/after available)
+    before_train = results.get('before_train', {}).get('exact_match_rate')
+    after_train = results.get('after_train', {}).get('exact_match_rate')
+    before_val = results.get('before_val', {}).get('exact_match_rate')
+    after_val = results.get('after_val', {}).get('exact_match_rate')
+
+    if before_train is not None and after_train is not None:
+        print("\n" + "-" * 70)
+        print("  IMPROVEMENTS")
+        print("-" * 70)
+        train_imp = after_train - before_train
+        print(f"  Train: {before_train:.2f}% -> {after_train:.2f}% ({train_imp:+.2f}%)")
+
+        if before_val is not None and after_val is not None:
+            val_imp = after_val - before_val
+            print(f"  Val:   {before_val:.2f}% -> {after_val:.2f}% ({val_imp:+.2f}%)")
+
+    print("\n" + "=" * 70)
+
+
+def save_phase_results(phase_output: Path, results: dict, filename: str = "eval_results.json"):
+    """Save phase results to JSON file."""
+    results_path = phase_output / filename
+
+    # Convert any non-serializable types
+    def make_serializable(obj):
+        if isinstance(obj, dict):
+            return {k: make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [make_serializable(v) for v in obj]
+        elif isinstance(obj, (int, float, str, bool, type(None))):
+            return obj
+        else:
+            return str(obj)
+
+    serializable = make_serializable(results)
+
+    with open(results_path, 'w') as f:
+        json.dump(serializable, f, indent=2)
+
+    print(f"Results saved to: {results_path}")
+    return results_path
+
+
+def load_phase_results(phase_output: Path, filename: str = "eval_results.json") -> dict:
+    """Load phase results from JSON file."""
+    results_path = phase_output / filename
+    if results_path.exists():
+        with open(results_path) as f:
+            return json.load(f)
+    return {}
+
+
 # ============== ModelManager: Unified Model Lifecycle ==============
 
 class ModelManager:
@@ -641,6 +817,8 @@ def evaluate_judgment_with_model(
     correct_count = 0
     pred_dist = {"can": 0, "uncertain": 0, "cannot": 0}
     actual_dist = {"can": 0, "uncertain": 0, "cannot": 0}
+    actual_abilities = []
+    qa_correct_count = 0
 
     for i, sample in enumerate(samples):
         # Get QA responses for this sample
@@ -652,6 +830,11 @@ def evaluate_judgment_with_model(
         gold_answers = sample.get("normalized_answers", sample.get("answers", []))
         correct_responses = sum(1 for r in responses if is_correct(r, gold_answers))
         actual_ability = classify_ability(correct_responses, num_trials)
+        actual_abilities.append(actual_ability)
+
+        # Track QA accuracy (any correct response)
+        if correct_responses > 0:
+            qa_correct_count += 1
 
         # Get predicted ability
         predicted_ability = predicted_abilities[i]
@@ -665,20 +848,29 @@ def evaluate_judgment_with_model(
 
     total = len(samples)
     exact_match_rate = correct_count / total * 100 if total > 0 else 0
+    qa_accuracy = qa_correct_count / total * 100 if total > 0 else 0
+
+    # Compute confusion matrix
+    confusion = compute_confusion_matrix(predicted_abilities, actual_abilities)
 
     print(f"\nResults:")
     print(f"  Exact match rate: {exact_match_rate:.1f}%")
+    print(f"  QA accuracy: {qa_accuracy:.1f}%")
     print(f"  Predicted distribution: can={pred_dist['can']}, uncertain={pred_dist['uncertain']}, cannot={pred_dist['cannot']}")
     print(f"  Actual distribution: can={actual_dist['can']}, uncertain={actual_dist['uncertain']}, cannot={actual_dist['cannot']}")
 
     return {
         "exact_match_rate": exact_match_rate,
+        "qa_accuracy": qa_accuracy,
+        "qa_correct": qa_correct_count,
+        "qa_total": total,
         "pred_can": pred_dist["can"],
         "pred_uncertain": pred_dist["uncertain"],
         "pred_cannot": pred_dist["cannot"],
         "actual_can": actual_dist["can"],
         "actual_uncertain": actual_dist["uncertain"],
         "actual_cannot": actual_dist["cannot"],
+        "confusion": confusion,
     }
 
 
@@ -846,7 +1038,19 @@ def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
     Phase 1 baseline evaluation (before training).
 
     Uses subprocess for evaluation to avoid GPU memory conflicts.
+    Results are cached and can be loaded if not --force.
     """
+    phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+    results_file = "baseline_results.json"
+
+    # Check for cached results
+    if not args.force:
+        cached_results = load_phase_results(phase_output, results_file)
+        if cached_results:
+            if is_main_process():
+                print(f"\n[Phase 1] Loading cached baseline results from {phase_output / results_file}")
+            return cached_results
+
     eval_results = {}
 
     if is_main_process():
@@ -874,6 +1078,9 @@ def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
         )
         eval_results['before_val'].update(qa_before)
         print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
+
+        # Save results
+        save_phase_results(phase_output, eval_results, results_file)
 
     if dist.is_initialized():
         dist.barrier()
@@ -928,12 +1135,27 @@ def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         dist.barrier()
 
 
-def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
+def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list, baseline_results: dict = None) -> dict:
     """
     Phase 1 evaluation after training.
 
     Uses pre-loaded model from ModelManager.
+    Results are cached and can be loaded if not --force.
     """
+    phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+    results_file = "after_train_results.json"
+
+    # Check for cached results
+    if not args.force:
+        cached_results = load_phase_results(phase_output, results_file)
+        if cached_results:
+            if is_main_process():
+                print(f"\n[Phase 1] Loading cached after-training results from {phase_output / results_file}")
+                # Merge with baseline and print summary
+                all_results = {**(baseline_results or {}), **cached_results}
+                print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
+            return cached_results
+
     eval_results = {}
 
     if is_main_process() and model_mgr.raw_model is not None:
@@ -956,13 +1178,12 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             args.num_trials, args.inference_batch_size
         )
 
-        # Print summary
-        print("\n" + "=" * 60)
-        print("Phase 1 Evaluation Summary")
-        print("=" * 60)
-        after_train_acc = eval_results.get('after_train', {}).get('exact_match_rate', 0)
-        after_val_acc = eval_results.get('after_val', {}).get('exact_match_rate', 0)
-        print(f"  After Training: Train={after_train_acc:.1f}%, Val={after_val_acc:.1f}%")
+        # Save results
+        save_phase_results(phase_output, eval_results, results_file)
+
+        # Merge with baseline and print summary
+        all_results = {**(baseline_results or {}), **eval_results}
+        print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
 
     if dist.is_initialized():
         dist.barrier()
@@ -997,8 +1218,23 @@ def run_phase2_data_prep(args, pipeline: MultiPhasePipeline, samples: list) -> l
     return qa_data
 
 
-def run_phase2_baseline_eval(args, model_path: str, samples: list) -> dict:
-    """Phase 2 baseline evaluation (QA accuracy before training)."""
+def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_path: str, samples: list) -> dict:
+    """
+    Phase 2 baseline evaluation (QA accuracy before training).
+
+    Results are cached and can be loaded if not --force.
+    """
+    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+    results_file = "baseline_results.json"
+
+    # Check for cached results
+    if not args.force:
+        cached_results = load_phase_results(phase_output, results_file)
+        if cached_results:
+            if is_main_process():
+                print(f"\n[Phase 2] Loading cached baseline results from {phase_output / results_file}")
+            return cached_results
+
     eval_results = {}
 
     if is_main_process():
@@ -1015,6 +1251,7 @@ def run_phase2_baseline_eval(args, model_path: str, samples: list) -> dict:
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
+        eval_results['before_train'] = before_train
 
         print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
         before_val = test_qa_accuracy(
@@ -1022,9 +1259,10 @@ def run_phase2_baseline_eval(args, model_path: str, samples: list) -> dict:
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
+        eval_results['before_val'] = before_val
 
-        eval_results['train_before_accuracy'] = before_train['qa_accuracy']
-        eval_results['val_before_accuracy'] = before_val['qa_accuracy']
+        # Save results
+        save_phase_results(phase_output, eval_results, results_file)
 
     if dist.is_initialized():
         dist.barrier()
@@ -1088,8 +1326,26 @@ def run_phase2_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         dist.barrier()
 
 
-def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
-    """Phase 2 evaluation after training."""
+def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list, baseline_results: dict = None) -> dict:
+    """
+    Phase 2 evaluation after training.
+
+    Results are cached and can be loaded if not --force.
+    """
+    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+    results_file = "after_train_results.json"
+
+    # Check for cached results
+    if not args.force:
+        cached_results = load_phase_results(phase_output, results_file)
+        if cached_results:
+            if is_main_process():
+                print(f"\n[Phase 2] Loading cached after-training results from {phase_output / results_file}")
+                # Merge with baseline and print summary
+                all_results = {**(baseline_results or {}), **cached_results}
+                print_phase_summary(2, "Knowledge Learning", all_results, model_mgr.current_path)
+            return cached_results
+
     eval_results = {}
 
     if is_main_process() and model_mgr.raw_model is not None:
@@ -1108,7 +1364,7 @@ def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {after_train['qa_accuracy']:.1f}%")
-        eval_results['train_after_accuracy'] = after_train['qa_accuracy']
+        eval_results['after_train'] = after_train
 
         print("\n[Step 2.4b] After training QA accuracy (validation split)...")
         after_val = test_qa_accuracy(
@@ -1118,7 +1374,14 @@ def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {after_val['qa_accuracy']:.1f}%")
-        eval_results['val_after_accuracy'] = after_val['qa_accuracy']
+        eval_results['after_val'] = after_val
+
+        # Save results
+        save_phase_results(phase_output, eval_results, results_file)
+
+        # Merge with baseline and print summary
+        all_results = {**(baseline_results or {}), **eval_results}
+        print_phase_summary(2, "Knowledge Learning", all_results, model_mgr.current_path)
 
     if dist.is_initialized():
         dist.barrier()
@@ -1291,9 +1554,36 @@ def run_phase3_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
 
 
 def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, original_samples: list) -> dict:
-    """Phase 3 final evaluation."""
-    eval_results = {}
+    """
+    Phase 3 final evaluation.
+
+    Results are cached and can be loaded if not --force.
+    Evaluates both QA and judgment ability on train/val splits.
+    """
     phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+    results_file = "eval_results.json"
+
+    # Check for cached results
+    if not args.force:
+        cached_results = load_phase_results(phase_output, results_file)
+        if cached_results:
+            if is_main_process():
+                print(f"\n[Phase 3] Loading cached evaluation results from {phase_output / results_file}")
+                # Reformat for print_phase_summary
+                summary_results = {
+                    'after_train': {
+                        **cached_results.get('judgment_train', {}),
+                        **cached_results.get('qa_train', {}),
+                    },
+                    'after_val': {
+                        **cached_results.get('judgment_val', {}),
+                        **cached_results.get('qa_val', {}),
+                    },
+                }
+                print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
+            return cached_results
+
+    eval_results = {}
 
     if is_main_process():
         print("\n" + "=" * 60)
@@ -1302,25 +1592,42 @@ def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
 
         eval_model = str(phase_output / "judgment_v2")
 
-        # Judgment evaluation
+        # Judgment evaluation with confusion matrix
         print("\n[Step 3.4a] Final JUDGMENT evaluation (train split)...")
-        eval_results['judgment_train'] = run_judgment_evaluation(
-            eval_model, "none", "train", args.num_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
-        )
+        train_test_samples = original_samples[:args.num_samples]
+        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
+
+        # Load model for evaluation if needed
+        if model_mgr.raw_model is not None:
+            eval_results['judgment_train'] = evaluate_judgment_with_model(
+                model_mgr.raw_model, model_mgr.tokenizer, train_test_samples,
+                args.num_trials, args.inference_batch_size
+            )
+        else:
+            eval_results['judgment_train'] = run_judgment_evaluation(
+                eval_model, "none", "train", args.num_samples,
+                args.num_trials, args.inference_batch_size, args.num_gpus
+            )
 
         print("\n[Step 3.4b] Final JUDGMENT evaluation (validation split)...")
-        eval_results['judgment_val'] = run_judgment_evaluation(
-            eval_model, "none", "validation", args.test_samples,
-            args.num_trials, args.inference_batch_size, args.num_gpus
-        )
+        if model_mgr.raw_model is not None:
+            eval_results['judgment_val'] = evaluate_judgment_with_model(
+                model_mgr.raw_model, model_mgr.tokenizer, val_test_samples,
+                args.num_trials, args.inference_batch_size
+            )
+        else:
+            eval_results['judgment_val'] = run_judgment_evaluation(
+                eval_model, "none", "validation", args.test_samples,
+                args.num_trials, args.inference_batch_size, args.num_gpus
+            )
 
         # QA evaluation
         print("\n[Step 3.4c] Final QA accuracy (train split)...")
         train_samples_for_qa = original_samples[:args.test_samples]
         qa_train = test_qa_accuracy(
             eval_model, train_samples_for_qa,
-            args.num_trials, args.inference_batch_size, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer if model_mgr.raw_model else None
         )
         eval_results['qa_train'] = qa_train
         print(f"  QA accuracy (train): {qa_train['qa_accuracy']:.1f}%")
@@ -1329,18 +1636,27 @@ def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
         val_samples_for_qa = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_val = test_qa_accuracy(
             eval_model, val_samples_for_qa,
-            args.num_trials, args.inference_batch_size, args.num_gpus
+            args.num_trials, args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer if model_mgr.raw_model else None
         )
         eval_results['qa_val'] = qa_val
         print(f"  QA accuracy (val): {qa_val['qa_accuracy']:.1f}%")
 
-        # Summary
-        print("\n" + "=" * 60)
-        print("Phase 3 Evaluation Summary")
-        print("=" * 60)
-        print(f"  JUDGMENT: Train={eval_results['judgment_train'].get('exact_match_rate', 0):.1f}%, "
-              f"Val={eval_results['judgment_val'].get('exact_match_rate', 0):.1f}%")
-        print(f"  QA: Train={qa_train['qa_accuracy']:.1f}%, Val={qa_val['qa_accuracy']:.1f}%")
+        # Save results
+        save_phase_results(phase_output, eval_results, results_file)
+
+        # Reformat for print_phase_summary
+        summary_results = {
+            'after_train': {
+                **eval_results.get('judgment_train', {}),
+                **eval_results.get('qa_train', {}),
+            },
+            'after_val': {
+                **eval_results.get('judgment_val', {}),
+                **eval_results.get('qa_val', {}),
+            },
+        }
+        print_phase_summary(3, "Update Judgment", summary_results, eval_model)
 
     if dist.is_initialized():
         dist.barrier()
@@ -1502,7 +1818,7 @@ def main():
             run_phase1_training(args, pipeline, model_mgr, training_data)
 
             # Evaluation (uses pre-loaded model)
-            after_eval = run_phase1_evaluation(args, pipeline, model_mgr, samples)
+            after_eval = run_phase1_evaluation(args, pipeline, model_mgr, samples, baseline_results=baseline_eval)
 
             # Record phase result
             if is_main_process():
@@ -1541,7 +1857,7 @@ def main():
                 phase2_base_model = args.model
 
             # Baseline eval (uses subprocess, model not loaded yet)
-            baseline_eval = run_phase2_baseline_eval(args, phase2_base_model, samples)
+            baseline_eval = run_phase2_baseline_eval(args, pipeline, phase2_base_model, samples)
 
             # Load model for training (or continue using if already loaded from same path)
             if not model_mgr.is_loaded() or model_mgr.current_path != phase2_base_model:
@@ -1551,7 +1867,7 @@ def main():
             run_phase2_training(args, pipeline, model_mgr, qa_data)
 
             # Evaluation
-            after_eval = run_phase2_evaluation(args, pipeline, model_mgr, samples)
+            after_eval = run_phase2_evaluation(args, pipeline, model_mgr, samples, baseline_results=baseline_eval)
 
             # Record phase result
             if is_main_process():
