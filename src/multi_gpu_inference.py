@@ -12,9 +12,13 @@ Usage:
 """
 
 import os
+import warnings
 import torch
 import torch.multiprocessing as mp
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Suppress warnings about unused generation flags (top_p, top_k) when using greedy decoding
+warnings.filterwarnings("ignore", message=".*generation flags are not valid.*")
 from typing import List, Dict, Optional
 from tqdm import tqdm
 from queue import Empty
@@ -35,6 +39,10 @@ def _worker_init(
     """
     Worker process: load model on specific GPU and process tasks from queue.
     """
+    # Suppress warnings in worker process
+    import warnings
+    warnings.filterwarnings("ignore", message=".*generation flags are not valid.*")
+
     # Set device for this worker
     device = f"cuda:{rank}"
     torch.cuda.set_device(rank)
