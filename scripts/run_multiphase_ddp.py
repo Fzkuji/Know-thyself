@@ -1983,15 +1983,19 @@ def main():
     if args.phase:
         phases_to_run = [args.phase]
     else:
-        # Auto-resume from last completed phase
-        start_phase = pipeline.state.current_phase + 1
-        phases_to_run = list(range(start_phase, 4))
-        if not phases_to_run:
-            if is_main_process():
-                print("All phases already completed!")
-                pipeline.print_summary()
-            cleanup_ddp()
-            return
+        if args.force:
+            # Force mode: run all phases from the beginning
+            phases_to_run = [1, 2, 3]
+        else:
+            # Auto-resume from last completed phase
+            start_phase = pipeline.state.current_phase + 1
+            phases_to_run = list(range(start_phase, 4))
+            if not phases_to_run:
+                if is_main_process():
+                    print("All phases already completed!")
+                    pipeline.print_summary()
+                cleanup_ddp()
+                return
 
     if is_main_process():
         print(f"Phases to run: {phases_to_run}")
