@@ -9,6 +9,7 @@ Multi-GPU inference is enabled by default when multiple GPUs are available.
 import argparse
 import sys
 import re
+import json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -220,6 +221,10 @@ def main():
     parser.add_argument("--num_gpus", type=int, default=None,
                         help="Number of GPUs to use for inference (default: all available)")
 
+    # Output
+    parser.add_argument("--output_json", type=str, default=None,
+                        help="Path to save metrics JSON (default: auto-generate based on split)")
+
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
@@ -269,7 +274,23 @@ def main():
     print(f"\nPredicted distribution: can={pred['can']}, uncertain={pred['uncertain']}, cannot={pred['cannot']}")
     print(f"Actual distribution:    can={actual['can']}, uncertain={actual['uncertain']}, cannot={actual['cannot']}")
 
-    print("\nDone!")
+    # Save metrics to JSON
+    if args.output_json:
+        output_path = Path(args.output_json)
+    else:
+        # Auto-generate path based on model directory
+        model_path = Path(args.model)
+        if model_path.exists() and model_path.is_dir():
+            output_path = model_path / f"metrics_{args.split}.json"
+        else:
+            output_path = Path(f"metrics_{args.split}.json")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"\nMetrics saved to: {output_path}")
+
+    print("Done!")
 
 
 if __name__ == "__main__":

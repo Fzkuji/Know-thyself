@@ -35,6 +35,7 @@ log() {
 # ============== Step 0: Baseline Evaluation ==============
 log "Step 0: Baseline evaluation (before any training)"
 
+mkdir -p "$OUTPUT_DIR/epoch_0"
 if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ]; then
     # Evaluate on training samples (same samples used for training)
     python scripts/step4_evaluate.py \
@@ -45,6 +46,7 @@ if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ]; then
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --output_json "$OUTPUT_DIR/epoch_0/metrics_train.json" \
         2>&1 | tee "$OUTPUT_DIR/baseline_train.log"
 
     # Evaluate on validation samples
@@ -56,6 +58,7 @@ if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ]; then
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --output_json "$OUTPUT_DIR/epoch_0/metrics_validation.json" \
         2>&1 | tee "$OUTPUT_DIR/baseline_val.log"
 
     echo '{"status": "completed"}' > "$OUTPUT_DIR/baseline_eval.json"
@@ -161,6 +164,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --output_json "$EPOCH_OUTPUT/metrics_train.json" \
         2>&1 | tee "$EPOCH_OUTPUT/eval_train.log"
 
     # 2. Evaluate on validation samples
@@ -173,6 +177,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --output_json "$EPOCH_OUTPUT/metrics_validation.json" \
         2>&1 | tee "$EPOCH_OUTPUT/eval_val.log"
 
     log "Epoch $epoch evaluation complete"
@@ -186,3 +191,63 @@ log "Results in: $OUTPUT_DIR"
 # Create symlink to final model
 ln -sf "epoch_$NUM_EPOCHS" "$OUTPUT_DIR/final_model"
 log "Symlink created: $OUTPUT_DIR/final_model -> epoch_$NUM_EPOCHS"
+
+# Generate summary table
+log "Generating summary table..."
+python3 << 'PYTHON_SCRIPT'
+import json
+import os
+from pathlib import Path
+
+output_dir = os.environ.get("OUTPUT_DIR", "experiments/phase1")
+num_epochs = int(os.environ.get("NUM_EPOCHS", "10"))
+
+# Collect metrics from all epochs
+rows = []
+for epoch in range(0, num_epochs + 1):
+    epoch_dir = Path(output_dir) / f"epoch_{epoch}"
+    train_json = epoch_dir / "metrics_train.json"
+    val_json = epoch_dir / "metrics_validation.json"
+
+    row = {"epoch": epoch}
+
+    if train_json.exists():
+        with open(train_json) as f:
+            m = json.load(f)
+            row["train_qa"] = m.get("qa_accuracy", 0) * 100
+            row["train_judgment"] = m.get("exact_match_rate", 0) * 100
+
+    if val_json.exists():
+        with open(val_json) as f:
+            m = json.load(f)
+            row["val_qa"] = m.get("qa_accuracy", 0) * 100
+            row["val_judgment"] = m.get("exact_match_rate", 0) * 100
+
+    if len(row) > 1:  # Has at least some data
+        rows.append(row)
+
+# Print table
+print("\n" + "=" * 70)
+print("PHASE 1 SUMMARY")
+print("=" * 70)
+print(f"{'Epoch':>6} | {'Train QA':>10} | {'Train Judge':>12} | {'Val QA':>10} | {'Val Judge':>12}")
+print("-" * 70)
+for row in rows:
+    epoch = row["epoch"]
+    train_qa = f"{row.get('train_qa', 0):.1f}%" if 'train_qa' in row else "N/A"
+    train_j = f"{row.get('train_judgment', 0):.1f}%" if 'train_judgment' in row else "N/A"
+    val_qa = f"{row.get('val_qa', 0):.1f}%" if 'val_qa' in row else "N/A"
+    val_j = f"{row.get('val_judgment', 0):.1f}%" if 'val_judgment' in row else "N/A"
+    print(f"{epoch:>6} | {train_qa:>10} | {train_j:>12} | {val_qa:>10} | {val_j:>12}")
+print("=" * 70)
+
+# Save to CSV
+csv_path = Path(output_dir) / "summary.csv"
+with open(csv_path, "w") as f:
+    f.write("epoch,train_qa_acc,train_judgment_acc,val_qa_acc,val_judgment_acc\n")
+    for row in rows:
+        f.write(f"{row['epoch']},{row.get('train_qa', '')},{row.get('train_judgment', '')},{row.get('val_qa', '')},{row.get('val_judgment', '')}\n")
+print(f"\nSummary saved to: {csv_path}")
+PYTHON_SCRIPT
+
+log "Done!"
