@@ -186,6 +186,11 @@ def compute_metrics(results):
     pred_counts = {a: sum(1 for r in results if r["predicted"] == a) for a in abilities}
     actual_counts = {a: sum(1 for r in results if r["actual"] == a) for a in abilities}
 
+    # QA accuracy statistics
+    total_correct = sum(r["correct_count"] for r in results)
+    total_trials = sum(len(r["responses"]) for r in results)
+    avg_accuracy = sum(r["accuracy"] for r in results) / total if total > 0 else 0
+
     return {
         "total": total,
         "exact_match": exact_match,
@@ -193,6 +198,11 @@ def compute_metrics(results):
         "confusion": confusion,
         "pred_counts": pred_counts,
         "actual_counts": actual_counts,
+        # QA accuracy
+        "qa_total_correct": total_correct,
+        "qa_total_trials": total_trials,
+        "qa_accuracy": total_correct / total_trials if total_trials > 0 else 0,
+        "qa_avg_accuracy": avg_accuracy,
     }
 
 
@@ -239,7 +249,15 @@ def main():
     print("EVALUATION RESULTS")
     print("=" * 60)
     print(f"Total samples: {metrics['total']}")
-    print(f"\nExact match (predicted == actual): {metrics['exact_match']} ({metrics['exact_match_rate']*100:.1f}%)")
+
+    # QA Accuracy (how well the model actually answers questions)
+    print(f"\n--- QA Performance ---")
+    print(f"QA Accuracy: {metrics['qa_total_correct']}/{metrics['qa_total_trials']} ({metrics['qa_accuracy']*100:.1f}%)")
+    print(f"Average per-question accuracy: {metrics['qa_avg_accuracy']*100:.1f}%")
+
+    # Judgment Accuracy (how well the model predicts its own ability)
+    print(f"\n--- Judgment Performance ---")
+    print(f"Exact match (predicted == actual): {metrics['exact_match']} ({metrics['exact_match_rate']*100:.1f}%)")
 
     # 3x3 Confusion Matrix
     c = metrics["confusion"]
