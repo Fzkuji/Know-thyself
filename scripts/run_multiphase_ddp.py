@@ -8,10 +8,11 @@ Key design:
 - ModelManager: Centralized model lifecycle management
 - Phase functions: Only handle data prep, training logic, and evaluation
 - Main loop: Coordinates model state and phase transitions
+- Auto-resume: Automatically continues from last completed phase
 
 Usage:
-    # Run with torchrun
-    torchrun --nproc_per_node=8 run_multiphase_ddp.py --model Qwen/Qwen2.5-7B-Instruct --ddp
+    # Run with torchrun (auto-resumes from last completed phase)
+    torchrun --nproc_per_node=8 run_multiphase_ddp.py --ddp
 
     # Run specific phase
     torchrun --nproc_per_node=8 run_multiphase_ddp.py --phase 2 --ddp
@@ -1909,8 +1910,6 @@ def main():
     # Phase control
     parser.add_argument("--phase", type=int, default=None,
                         help="Run specific phase only (1, 2, or 3)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume from last completed phase")
     parser.add_argument("--force", action="store_true",
                         help="Force re-run even if step already completed")
 
@@ -1988,10 +1987,11 @@ def main():
             print(f"World size: {dist.get_world_size()}")
         print("=" * 60)
 
-    # Determine phases to run
+    # Determine phases to run (auto-resume by default)
     if args.phase:
         phases_to_run = [args.phase]
-    elif args.resume:
+    else:
+        # Auto-resume from last completed phase
         start_phase = pipeline.state.current_phase + 1
         phases_to_run = list(range(start_phase, 4))
         if not phases_to_run:
@@ -2000,8 +2000,6 @@ def main():
                 pipeline.print_summary()
             cleanup_ddp()
             return
-    else:
-        phases_to_run = [1, 2, 3]
 
     if is_main_process():
         print(f"Phases to run: {phases_to_run}")
@@ -2027,6 +2025,34 @@ def main():
                 print(f"Phase {phase} already completed, skipping...")
                 print(f"(Use --force to re-run)")
                 print(f"{'=' * 60}")
+
+                # Print cached summary for skipped phase
+                if phase == 1:
+                    phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+                    baseline = load_phase_results(phase_output, "baseline_results.json")
+                    after = load_phase_results(phase_output, "after_train_results.json")
+                    all_results = {**baseline, **after}
+                    print_phase_summary(1, "Initial Judgment Training", all_results, str(phase1_model_path))
+                elif phase == 2:
+                    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+                    baseline = load_phase_results(phase_output, "baseline_results.json")
+                    after = load_phase_results(phase_output, "after_train_results.json")
+                    all_results = {**baseline, **after}
+                    print_phase_summary(2, "Knowledge Learning", all_results, str(phase2_model_path))
+                elif phase == 3:
+                    phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+                    results = load_phase_results(phase_output, "eval_results.json")
+                    summary_results = {
+                        'after_train': {
+                            **results.get('judgment_train', {}),
+                            **results.get('qa_train', {}),
+                        },
+                        'after_val': {
+                            **results.get('judgment_val', {}),
+                            **results.get('qa_val', {}),
+                        },
+                    }
+                    print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
             continue
 
         if phase == 1:
