@@ -1407,12 +1407,13 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
     """
     Phase 1 evaluation after training.
 
-    Uses pre-loaded model from ModelManager.
+    Uses subprocess for multi-GPU evaluation (same as baseline eval).
+    Model is unloaded before evaluation to free GPU memory.
     Results are cached and can be loaded if valid.
-    Re-runs evaluation if cached results are invalid (regardless of --force).
     """
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
     results_file = "after_train_results.json"
+    trained_model_path = str(phase_output / "judgment_v1")
 
     # Check for cached results - validate they are complete
     cached_results = load_phase_results(phase_output, results_file)
@@ -1421,50 +1422,57 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             print(f"\n[Phase 1] Loading cached after-training results from {phase_output / results_file}")
             # Merge with baseline and print summary
             all_results = {**(baseline_results or {}), **cached_results}
-            print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
+            print_phase_summary(1, "Initial Judgment Training", all_results, trained_model_path)
         return cached_results
 
     # Results invalid or force mode - need to re-run evaluation
     if is_main_process() and cached_results and not is_eval_results_valid(cached_results, phase=1):
         print(f"\n[Phase 1] Cached results are invalid, re-running evaluation...")
 
+    # Unload model to free GPU memory for multi-GPU evaluation
+    if is_main_process():
+        print("\nUnloading model for multi-GPU evaluation...")
+    model_mgr.unload()
+    torch.cuda.empty_cache()
+
+    if dist.is_initialized():
+        dist.barrier()
+
     eval_results = {}
 
-    if is_main_process() and model_mgr.raw_model is not None:
+    if is_main_process():
         print("\n" + "=" * 60)
-        print("Phase 1 After-Training Evaluation")
+        print("Phase 1 After-Training Evaluation (Multi-GPU)")
         print("=" * 60)
 
-        train_test_samples = samples[:args.num_samples]
-        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-
+        # Use subprocess for multi-GPU judgment evaluation (same as baseline)
         print("\n[Step 1.5a] After training JUDGMENT evaluation (train split)...")
-        eval_results['after_train'] = evaluate_judgment_with_model(
-            model_mgr.raw_model, model_mgr.tokenizer, train_test_samples,
-            args.num_trials, args.inference_batch_size
+        eval_results['after_train'] = run_judgment_evaluation(
+            trained_model_path, "none", "train", args.num_samples,
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         print("\n[Step 1.5b] After training JUDGMENT evaluation (validation split)...")
-        eval_results['after_val'] = evaluate_judgment_with_model(
-            model_mgr.raw_model, model_mgr.tokenizer, val_test_samples,
-            args.num_trials, args.inference_batch_size
+        eval_results['after_val'] = run_judgment_evaluation(
+            trained_model_path, "none", "validation", args.test_samples,
+            args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
-        # Also test QA accuracy (will be used as Phase 2 baseline)
+        # Multi-GPU QA accuracy (no model param = uses create_inference)
         print("\n[Step 1.5c] After training QA accuracy (train split)...")
+        train_samples = load_triviaqa(split="train", num_samples=args.num_samples)
         qa_train = test_qa_accuracy(
-            str(model_mgr.current_path), train_test_samples[:args.test_samples], args.num_trials,
-            args.inference_batch_size, args.num_gpus,
-            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
+            trained_model_path, train_samples[:args.test_samples], args.num_trials,
+            args.inference_batch_size, args.num_gpus
         )
         eval_results['after_train'].update(qa_train)
         print(f"  QA Accuracy: {qa_train['qa_accuracy']:.1f}%")
 
         print("\n[Step 1.5d] After training QA accuracy (validation split)...")
+        val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_val = test_qa_accuracy(
-            str(model_mgr.current_path), val_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus,
-            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
+            trained_model_path, val_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus
         )
         eval_results['after_val'].update(qa_val)
         print(f"  QA Accuracy: {qa_val['qa_accuracy']:.1f}%")
@@ -1474,7 +1482,7 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
 
         # Merge with baseline and print summary
         all_results = {**(baseline_results or {}), **eval_results}
-        print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
+        print_phase_summary(1, "Initial Judgment Training", all_results, trained_model_path)
 
     if dist.is_initialized():
         dist.barrier()
