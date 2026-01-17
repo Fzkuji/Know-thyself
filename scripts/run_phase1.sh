@@ -61,7 +61,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --val_samples N        Validation samples (default: 1000)"
             echo "  --num_trials N         Trials per question (default: 10)"
             echo "  --num_epochs N         Number of epochs (default: 10)"
-            echo "  --batch_size N         Inference batch size (default: 16)"
+            echo "  --batch_size N         Inference batch size (default: 32)"
             echo "  --lr RATE              Learning rate (default: 1e-5)"
             echo "  --num_gpus N           Number of GPUs (default: 8)"
             echo "  --output_dir DIR       Output directory (default: experiments/phase1)"
@@ -80,7 +80,7 @@ NUM_SAMPLES="${NUM_SAMPLES:-500}"
 VAL_SAMPLES="${VAL_SAMPLES:-1000}"  # validation samples
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
 LR="${LR:-1e-5}"
 NUM_GPUS="${NUM_GPUS:-8}"
 
