@@ -192,9 +192,8 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
     Print standardized summary for a phase.
 
     Format:
-    - Pre-trained Model: QA Ability + Judgment Ability with Confusion Matrix
-    - After Phase X Training: QA Ability + Judgment Ability with Confusion Matrix
-    - Comparison: improvement summary
+    - Phase 1: Pre-trained Model + After Training + Comparison
+    - Phase 2/3: Only After Training (no pre-trained comparison)
 
     Args:
         phase: Phase number (1, 2, or 3)
@@ -221,8 +220,12 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
     has_qa = any(d.get('qa_accuracy') is not None for d in [before_train, before_val, after_train, after_val])
     has_judgment = any(d.get('exact_match_rate') is not None for d in [before_train, before_val, after_train, after_val])
 
-    # Print Pre-trained Model block (before training)
-    if has_before:
+    # Phase 1: Show both Pre-trained Model and After Training
+    # Phase 2/3: Only show After Training (no pre-trained comparison needed)
+    show_before = (phase == 1) and has_before
+
+    # Print Pre-trained Model block (only for Phase 1)
+    if show_before:
         print_stage_block(
             "Pre-trained Model",
             before_train, before_val,
@@ -237,42 +240,43 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
             show_qa=has_qa, show_judgment=has_judgment
         )
 
-    # Print Comparison summary
-    before_train_em = before_train.get('exact_match_rate')
-    after_train_em = after_train.get('exact_match_rate')
-    before_val_em = before_val.get('exact_match_rate')
-    after_val_em = after_val.get('exact_match_rate')
+    # Print Comparison summary (only for Phase 1)
+    if show_before:
+        before_train_em = before_train.get('exact_match_rate')
+        after_train_em = after_train.get('exact_match_rate')
+        before_val_em = before_val.get('exact_match_rate')
+        after_val_em = after_val.get('exact_match_rate')
 
-    before_train_qa = before_train.get('qa_accuracy')
-    after_train_qa = after_train.get('qa_accuracy')
-    before_val_qa = before_val.get('qa_accuracy')
-    after_val_qa = after_val.get('qa_accuracy')
+        before_train_qa = before_train.get('qa_accuracy')
+        after_train_qa = after_train.get('qa_accuracy')
+        before_val_qa = before_val.get('qa_accuracy')
+        after_val_qa = after_val.get('qa_accuracy')
 
-    has_comparison = (before_train_em is not None and after_train_em is not None) or \
-                     (before_train_qa is not None and after_train_qa is not None)
+        has_comparison = (before_train_em is not None and after_train_em is not None) or \
+                         (before_train_qa is not None and after_train_qa is not None)
 
-    if has_comparison:
-        print(f"\n  ┌─ Comparison " + "─" * 47)
-        print("  │")
+        if has_comparison:
+            print(f"\n  ┌─ Comparison " + "─" * 47)
+            print("  │")
 
-        # QA comparison
-        if before_train_qa is not None and after_train_qa is not None:
-            train_qa_imp = after_train_qa - before_train_qa
-            print(f"  │  QA (Train):      {before_train_qa:5.1f}% → {after_train_qa:5.1f}% ({train_qa_imp:+5.1f}%)")
-        if before_val_qa is not None and after_val_qa is not None:
-            val_qa_imp = after_val_qa - before_val_qa
-            print(f"  │  QA (Validation): {before_val_qa:5.1f}% → {after_val_qa:5.1f}% ({val_qa_imp:+5.1f}%)")
+            # QA comparison
+            if before_train_qa is not None and after_train_qa is not None:
+                train_qa_imp = after_train_qa - before_train_qa
+                print(f"  │  QA (Train):      {before_train_qa:5.1f}% → {after_train_qa:5.1f}% ({train_qa_imp:+5.1f}%)")
+            if before_val_qa is not None and after_val_qa is not None:
+                val_qa_imp = after_val_qa - before_val_qa
+                print(f"  │  QA (Validation): {before_val_qa:5.1f}% → {after_val_qa:5.1f}% ({val_qa_imp:+5.1f}%)")
 
-        # Judgment comparison
-        if before_train_em is not None and after_train_em is not None:
-            train_em_imp = after_train_em - before_train_em
-            print(f"  │  Judgment (Train):      {before_train_em:5.1f}% → {after_train_em:5.1f}% ({train_em_imp:+5.1f}%)")
-        if before_val_em is not None and after_val_em is not None:
-            val_em_imp = after_val_em - before_val_em
-            print(f"  │  Judgment (Validation): {before_val_em:5.1f}% → {after_val_em:5.1f}% ({val_em_imp:+5.1f}%)")
+            # Judgment comparison
+            if before_train_em is not None and after_train_em is not None:
+                train_em_imp = after_train_em - before_train_em
+                print(f"  │  Judgment (Train):      {before_train_em:5.1f}% → {after_train_em:5.1f}% ({train_em_imp:+5.1f}%)")
+            if before_val_em is not None and after_val_em is not None:
+                val_em_imp = after_val_em - before_val_em
+                print(f"  │  Judgment (Validation): {before_val_em:5.1f}% → {after_val_em:5.1f}% ({val_em_imp:+5.1f}%)")
 
-        print("  │")
-        print("  └" + "─" * 60)
+            print("  │")
+            print("  └" + "─" * 60)
 
     print("\n" + "=" * 70)
 
@@ -308,6 +312,45 @@ def load_phase_results(phase_output: Path, filename: str = "eval_results.json") 
         with open(results_path) as f:
             return json.load(f)
     return {}
+
+
+def is_eval_results_valid(results: dict, phase: int) -> bool:
+    """
+    Check if evaluation results are valid for a given phase.
+
+    Returns True only if the results contain the required metrics.
+    """
+    if not results:
+        return False
+
+    if phase == 1:
+        # Phase 1 needs judgment metrics (exact_match_rate)
+        after_train = results.get('after_train', {})
+        after_val = results.get('after_val', {})
+        return (after_train.get('exact_match_rate') is not None or
+                after_val.get('exact_match_rate') is not None)
+
+    elif phase == 2:
+        # Phase 2 needs QA metrics (qa_accuracy)
+        after_train = results.get('after_train', {})
+        after_val = results.get('after_val', {})
+        return (after_train.get('qa_accuracy') is not None or
+                after_val.get('qa_accuracy') is not None)
+
+    elif phase == 3:
+        # Phase 3 needs both judgment and QA metrics
+        judgment_train = results.get('judgment_train', {})
+        judgment_val = results.get('judgment_val', {})
+        qa_train = results.get('qa_train', {})
+        qa_val = results.get('qa_val', {})
+
+        has_judgment = (judgment_train.get('exact_match_rate') is not None or
+                        judgment_val.get('exact_match_rate') is not None)
+        has_qa = (qa_train.get('qa_accuracy') is not None or
+                  qa_val.get('qa_accuracy') is not None)
+        return has_judgment and has_qa
+
+    return False
 
 
 # ============== ModelManager: Unified Model Lifecycle ==============
@@ -1011,13 +1054,39 @@ def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline) -> bo
 
 
 def is_phase_completed(phase: int, pipeline: MultiPhasePipeline) -> bool:
-    """Check if a phase has been fully completed."""
+    """
+    Check if a phase has been fully completed by checking eval results.
+
+    Returns True only if the phase has valid evaluation results saved.
+    This is more reliable than checking model folders, which may be empty or incomplete.
+    """
     if phase == 1:
-        return is_step_completed(1, "1.3_train", pipeline)
+        phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+        results = load_phase_results(phase_output, "after_train_results.json")
+        # Check if we have valid after-training judgment results
+        after_train = results.get('after_train', {})
+        after_val = results.get('after_val', {})
+        return (after_train.get('exact_match_rate') is not None or
+                after_val.get('exact_match_rate') is not None)
+
     elif phase == 2:
-        return is_step_completed(2, "2.2_train", pipeline)
+        phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+        results = load_phase_results(phase_output, "after_train_results.json")
+        # Check if we have valid after-training QA results
+        after_train = results.get('after_train', {})
+        after_val = results.get('after_val', {})
+        return (after_train.get('qa_accuracy') is not None or
+                after_val.get('qa_accuracy') is not None)
+
     elif phase == 3:
-        return is_step_completed(3, "3.3_train", pipeline)
+        phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+        results = load_phase_results(phase_output, "eval_results.json")
+        # Check if we have valid final judgment results
+        judgment_train = results.get('judgment_train', {})
+        judgment_val = results.get('judgment_val', {})
+        return (judgment_train.get('exact_match_rate') is not None or
+                judgment_val.get('exact_match_rate') is not None)
+
     return False
 
 
@@ -1101,23 +1170,49 @@ def run_phase1_data_prep(args, pipeline: MultiPhasePipeline) -> tuple:
     return samples, training_data
 
 
+def is_baseline_results_valid(results: dict, phase: int) -> bool:
+    """Check if baseline results are valid for a given phase."""
+    if not results:
+        return False
+
+    if phase == 1:
+        # Phase 1 baseline needs judgment metrics
+        before_train = results.get('before_train', {})
+        before_val = results.get('before_val', {})
+        return (before_train.get('exact_match_rate') is not None or
+                before_val.get('exact_match_rate') is not None)
+
+    elif phase == 2:
+        # Phase 2 baseline needs QA metrics
+        before_train = results.get('before_train', {})
+        before_val = results.get('before_val', {})
+        return (before_train.get('qa_accuracy') is not None or
+                before_val.get('qa_accuracy') is not None)
+
+    return False
+
+
 def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
     """
     Phase 1 baseline evaluation (before training).
 
     Uses subprocess for evaluation to avoid GPU memory conflicts.
-    Results are cached and can be loaded if not --force.
+    Results are cached and can be loaded if valid.
+    Re-runs evaluation if cached results are invalid (regardless of --force).
     """
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
     results_file = "baseline_results.json"
 
-    # Check for cached results
-    if not args.force:
-        cached_results = load_phase_results(phase_output, results_file)
-        if cached_results:
-            if is_main_process():
-                print(f"\n[Phase 1] Loading cached baseline results from {phase_output / results_file}")
-            return cached_results
+    # Check for cached results - validate they are complete
+    cached_results = load_phase_results(phase_output, results_file)
+    if is_baseline_results_valid(cached_results, phase=1) and not args.force:
+        if is_main_process():
+            print(f"\n[Phase 1] Loading cached baseline results from {phase_output / results_file}")
+        return cached_results
+
+    # Results invalid or force mode - need to re-run evaluation
+    if is_main_process() and cached_results and not is_baseline_results_valid(cached_results, phase=1):
+        print(f"\n[Phase 1] Cached baseline results are invalid, re-running evaluation...")
 
     eval_results = {}
 
@@ -1208,21 +1303,25 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
     Phase 1 evaluation after training.
 
     Uses pre-loaded model from ModelManager.
-    Results are cached and can be loaded if not --force.
+    Results are cached and can be loaded if valid.
+    Re-runs evaluation if cached results are invalid (regardless of --force).
     """
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
     results_file = "after_train_results.json"
 
-    # Check for cached results
-    if not args.force:
-        cached_results = load_phase_results(phase_output, results_file)
-        if cached_results:
-            if is_main_process():
-                print(f"\n[Phase 1] Loading cached after-training results from {phase_output / results_file}")
-                # Merge with baseline and print summary
-                all_results = {**(baseline_results or {}), **cached_results}
-                print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
-            return cached_results
+    # Check for cached results - validate they are complete
+    cached_results = load_phase_results(phase_output, results_file)
+    if is_eval_results_valid(cached_results, phase=1) and not args.force:
+        if is_main_process():
+            print(f"\n[Phase 1] Loading cached after-training results from {phase_output / results_file}")
+            # Merge with baseline and print summary
+            all_results = {**(baseline_results or {}), **cached_results}
+            print_phase_summary(1, "Initial Judgment Training", all_results, model_mgr.current_path)
+        return cached_results
+
+    # Results invalid or force mode - need to re-run evaluation
+    if is_main_process() and cached_results and not is_eval_results_valid(cached_results, phase=1):
+        print(f"\n[Phase 1] Cached results are invalid, re-running evaluation...")
 
     eval_results = {}
 
@@ -1290,18 +1389,22 @@ def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_path: str
     """
     Phase 2 baseline evaluation (QA accuracy before training).
 
-    Results are cached and can be loaded if not --force.
+    Results are cached and can be loaded if valid.
+    Re-runs evaluation if cached results are invalid (regardless of --force).
     """
     phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
     results_file = "baseline_results.json"
 
-    # Check for cached results
-    if not args.force:
-        cached_results = load_phase_results(phase_output, results_file)
-        if cached_results:
-            if is_main_process():
-                print(f"\n[Phase 2] Loading cached baseline results from {phase_output / results_file}")
-            return cached_results
+    # Check for cached results - validate they are complete
+    cached_results = load_phase_results(phase_output, results_file)
+    if is_baseline_results_valid(cached_results, phase=2) and not args.force:
+        if is_main_process():
+            print(f"\n[Phase 2] Loading cached baseline results from {phase_output / results_file}")
+        return cached_results
+
+    # Results invalid or force mode - need to re-run evaluation
+    if is_main_process() and cached_results and not is_baseline_results_valid(cached_results, phase=2):
+        print(f"\n[Phase 2] Cached baseline results are invalid, re-running evaluation...")
 
     eval_results = {}
 
@@ -1398,21 +1501,25 @@ def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
     """
     Phase 2 evaluation after training.
 
-    Results are cached and can be loaded if not --force.
+    Results are cached and can be loaded if valid.
+    Re-runs evaluation if cached results are invalid (regardless of --force).
     """
     phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
     results_file = "after_train_results.json"
 
-    # Check for cached results
-    if not args.force:
-        cached_results = load_phase_results(phase_output, results_file)
-        if cached_results:
-            if is_main_process():
-                print(f"\n[Phase 2] Loading cached after-training results from {phase_output / results_file}")
-                # Merge with baseline and print summary
-                all_results = {**(baseline_results or {}), **cached_results}
-                print_phase_summary(2, "Knowledge Learning", all_results, model_mgr.current_path)
-            return cached_results
+    # Check for cached results - validate they are complete
+    cached_results = load_phase_results(phase_output, results_file)
+    if is_eval_results_valid(cached_results, phase=2) and not args.force:
+        if is_main_process():
+            print(f"\n[Phase 2] Loading cached after-training results from {phase_output / results_file}")
+            # Merge with baseline and print summary
+            all_results = {**(baseline_results or {}), **cached_results}
+            print_phase_summary(2, "Knowledge Learning", all_results, model_mgr.current_path)
+        return cached_results
+
+    # Results invalid or force mode - need to re-run evaluation
+    if is_main_process() and cached_results and not is_eval_results_valid(cached_results, phase=2):
+        print(f"\n[Phase 2] Cached results are invalid, re-running evaluation...")
 
     eval_results = {}
 
@@ -1634,31 +1741,35 @@ def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
     """
     Phase 3 final evaluation.
 
-    Results are cached and can be loaded if not --force.
+    Results are cached and can be loaded if valid.
+    Re-runs evaluation if cached results are invalid (regardless of --force).
     Evaluates both QA and judgment ability on train/val splits.
     """
     phase_output = pipeline.get_phase_output_dir("phase3_judgment")
     results_file = "eval_results.json"
 
-    # Check for cached results
-    if not args.force:
-        cached_results = load_phase_results(phase_output, results_file)
-        if cached_results:
-            if is_main_process():
-                print(f"\n[Phase 3] Loading cached evaluation results from {phase_output / results_file}")
-                # Reformat for print_phase_summary
-                summary_results = {
-                    'after_train': {
-                        **cached_results.get('judgment_train', {}),
-                        **cached_results.get('qa_train', {}),
-                    },
-                    'after_val': {
-                        **cached_results.get('judgment_val', {}),
-                        **cached_results.get('qa_val', {}),
-                    },
-                }
-                print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
-            return cached_results
+    # Check for cached results - validate they are complete
+    cached_results = load_phase_results(phase_output, results_file)
+    if is_eval_results_valid(cached_results, phase=3) and not args.force:
+        if is_main_process():
+            print(f"\n[Phase 3] Loading cached evaluation results from {phase_output / results_file}")
+            # Reformat for print_phase_summary
+            summary_results = {
+                'after_train': {
+                    **cached_results.get('judgment_train', {}),
+                    **cached_results.get('qa_train', {}),
+                },
+                'after_val': {
+                    **cached_results.get('judgment_val', {}),
+                    **cached_results.get('qa_val', {}),
+                },
+            }
+            print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
+        return cached_results
+
+    # Results invalid or force mode - need to re-run evaluation
+    if is_main_process() and cached_results and not is_eval_results_valid(cached_results, phase=3):
+        print(f"\n[Phase 3] Cached results are invalid, re-running evaluation...")
 
     eval_results = {}
 
