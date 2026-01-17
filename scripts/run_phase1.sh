@@ -124,6 +124,8 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
     else
         # Train one epoch
         log "Training epoch $epoch..."
+        # Use set -o pipefail to catch errors through pipe
+        set -o pipefail
         if python scripts/step3_train_epoch.py \
             --model "$CURRENT_MODEL" \
             --input "$TRAINING_DATA" \
@@ -134,12 +136,18 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
             --skip_correct \
             --use_realtime_labels \
             2>&1 | tee "$EPOCH_OUTPUT/train.log"; then
+            # Verify that model was saved correctly
+            if [ ! -f "$EPOCH_OUTPUT/config.json" ]; then
+                log "ERROR: Training appeared to succeed but config.json not found!"
+                exit 1
+            fi
             CURRENT_MODEL="$EPOCH_OUTPUT"
             log "Epoch $epoch training complete"
         else
             log "ERROR: Epoch $epoch training failed!"
             exit 1
         fi
+        set +o pipefail
     fi
 
     # Evaluate after this epoch (always run to see progress)
