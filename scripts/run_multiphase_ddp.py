@@ -213,14 +213,18 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
     has_qa = any(d.get('qa_accuracy') is not None for d in [before_train, before_val, after_train, after_val])
     has_judgment = any(d.get('exact_match_rate') is not None for d in [before_train, before_val, after_train, after_val])
 
-    # Phase 1: Show both Pre-trained Model and After Training
-    # Phase 2/3: Only show After Training (no pre-trained comparison needed)
-    show_before = (phase == 1) and has_before
+    # Determine before block name based on phase
+    if phase == 1:
+        before_name = "Pre-trained Model"
+    elif phase == 2:
+        before_name = "After Phase 1 (Judgment)"
+    else:
+        before_name = "After Phase 2 (Knowledge)"
 
-    # Print Pre-trained Model block (only for Phase 1)
-    if show_before:
+    # Print Before Training block (if has before data)
+    if has_before:
         print_stage_block(
-            "Pre-trained Model",
+            before_name,
             before_train, before_val,
             show_qa=has_qa, show_judgment=has_judgment
         )
@@ -233,8 +237,8 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
             show_qa=has_qa, show_judgment=has_judgment
         )
 
-    # Print Comparison summary (only for Phase 1)
-    if show_before:
+    # Print Comparison summary (if we have both before and after)
+    if has_before and has_after:
         before_train_em = before_train.get('exact_match_rate')
         after_train_em = after_train.get('exact_match_rate')
         before_val_em = before_val.get('exact_match_rate')
@@ -246,7 +250,8 @@ def print_phase_summary(phase: int, phase_name: str, results: dict, model_name: 
         after_val_qa = after_val.get('qa_accuracy')
 
         has_comparison = (before_train_em is not None and after_train_em is not None) or \
-                         (before_train_qa is not None and after_train_qa is not None)
+                         (before_train_qa is not None and after_train_qa is not None) or \
+                         (before_val_qa is not None and after_val_qa is not None)
 
         if has_comparison:
             print(f"\n  ┌─ Comparison " + "─" * 47)
@@ -1768,7 +1773,7 @@ def run_phase3_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         dist.barrier()
 
 
-def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, original_samples: list) -> dict:
+def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, original_samples: list, baseline_results: dict = None) -> dict:
     """
     Phase 3 final evaluation.
 
@@ -1786,6 +1791,7 @@ def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             print(f"\n[Phase 3] Loading cached evaluation results from {phase_output / results_file}")
             # Reformat for print_phase_summary
             summary_results = {
+                **(baseline_results or {}),
                 'after_train': {
                     **cached_results.get('judgment_train', {}),
                     **cached_results.get('qa_train', {}),
@@ -1866,6 +1872,7 @@ def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
 
         # Reformat for print_phase_summary
         summary_results = {
+            **(baseline_results or {}),
             'after_train': {
                 **eval_results.get('judgment_train', {}),
                 **eval_results.get('qa_train', {}),
@@ -2025,15 +2032,20 @@ def main():
                 elif phase == 3:
                     phase_output = pipeline.get_phase_output_dir("phase3_judgment")
                     results = load_phase_results(phase_output, "eval_results.json")
-                    summary_results = {
-                        'after_train': {
-                            **results.get('judgment_train', {}),
-                            **results.get('qa_train', {}),
-                        },
-                        'after_val': {
-                            **results.get('judgment_val', {}),
-                            **results.get('qa_val', {}),
-                        },
+                    # Get baseline from Phase 2 after-training results
+                    phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
+                    phase2_after = load_phase_results(phase2_output, "after_train_results.json")
+                    summary_results = {}
+                    if phase2_after:
+                        summary_results['before_train'] = phase2_after.get('after_train', {})
+                        summary_results['before_val'] = phase2_after.get('after_val', {})
+                    summary_results['after_train'] = {
+                        **results.get('judgment_train', {}),
+                        **results.get('qa_train', {}),
+                    }
+                    summary_results['after_val'] = {
+                        **results.get('judgment_val', {}),
+                        **results.get('qa_val', {}),
                     }
                     print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
 
@@ -2065,15 +2077,20 @@ def main():
                 elif phase == 3:
                     phase_output = pipeline.get_phase_output_dir("phase3_judgment")
                     results = load_phase_results(phase_output, "eval_results.json")
-                    summary_results = {
-                        'after_train': {
-                            **results.get('judgment_train', {}),
-                            **results.get('qa_train', {}),
-                        },
-                        'after_val': {
-                            **results.get('judgment_val', {}),
-                            **results.get('qa_val', {}),
-                        },
+                    # Get baseline from Phase 2 after-training results
+                    phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
+                    phase2_after = load_phase_results(phase2_output, "after_train_results.json")
+                    summary_results = {}
+                    if phase2_after:
+                        summary_results['before_train'] = phase2_after.get('after_train', {})
+                        summary_results['before_val'] = phase2_after.get('after_val', {})
+                    summary_results['after_train'] = {
+                        **results.get('judgment_train', {}),
+                        **results.get('qa_train', {}),
+                    }
+                    summary_results['after_val'] = {
+                        **results.get('judgment_val', {}),
+                        **results.get('qa_val', {}),
                     }
                     print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
             continue
@@ -2148,8 +2165,16 @@ def main():
                 after_val = phase1_after.get('after_val', {})
                 if 'qa_accuracy' in after_train and 'qa_accuracy' in after_val:
                     baseline_eval = {
-                        'before_train': {'qa_accuracy': after_train['qa_accuracy']},
-                        'before_val': {'qa_accuracy': after_val['qa_accuracy']},
+                        'before_train': {
+                            'qa_accuracy': after_train['qa_accuracy'],
+                            'qa_correct': after_train.get('qa_correct'),
+                            'qa_total': after_train.get('qa_total'),
+                        },
+                        'before_val': {
+                            'qa_accuracy': after_val['qa_accuracy'],
+                            'qa_correct': after_val.get('qa_correct'),
+                            'qa_total': after_val.get('qa_total'),
+                        },
                     }
 
             # Training
@@ -2193,6 +2218,14 @@ def main():
                 if is_main_process():
                     print(f"Warning: Knowledge model not found, using original: {args.model}")
 
+            # Get baseline from Phase 2 after-training results (for summary)
+            phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
+            phase2_after = load_phase_results(phase2_output, "after_train_results.json")
+            baseline_results = {}
+            if phase2_after:
+                baseline_results['before_train'] = phase2_after.get('after_train', {})
+                baseline_results['before_val'] = phase2_after.get('after_val', {})
+
             # Ensure knowledge model is loaded
             # If continuing from Phase 2, model_mgr already has it loaded
             # If running Phase 3 standalone, need to load it
@@ -2208,7 +2241,7 @@ def main():
             run_phase3_training(args, pipeline, model_mgr, training_data)
 
             # Evaluation
-            eval_results = run_phase3_evaluation(args, pipeline, model_mgr, original_samples)
+            eval_results = run_phase3_evaluation(args, pipeline, model_mgr, original_samples, baseline_results)
 
             # Record phase result
             if is_main_process():
