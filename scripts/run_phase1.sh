@@ -13,7 +13,68 @@
 
 set -e  # Exit on error
 
-# ============== Configuration ==============
+# ============== Parse Command Line Arguments ==============
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --model)
+            MODEL="$2"
+            shift 2
+            ;;
+        --num_samples)
+            NUM_SAMPLES="$2"
+            shift 2
+            ;;
+        --val_samples)
+            VAL_SAMPLES="$2"
+            shift 2
+            ;;
+        --num_trials)
+            NUM_TRIALS="$2"
+            shift 2
+            ;;
+        --num_epochs)
+            NUM_EPOCHS="$2"
+            shift 2
+            ;;
+        --batch_size)
+            BATCH_SIZE="$2"
+            shift 2
+            ;;
+        --lr)
+            LR="$2"
+            shift 2
+            ;;
+        --num_gpus)
+            NUM_GPUS="$2"
+            shift 2
+            ;;
+        --output_dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --model MODEL          Model name (default: Qwen/Qwen2.5-7B-Instruct)"
+            echo "  --num_samples N        Training samples (default: 500)"
+            echo "  --val_samples N        Validation samples (default: 1000)"
+            echo "  --num_trials N         Trials per question (default: 10)"
+            echo "  --num_epochs N         Number of epochs (default: 10)"
+            echo "  --batch_size N         Inference batch size (default: 16)"
+            echo "  --lr RATE              Learning rate (default: 1e-5)"
+            echo "  --num_gpus N           Number of GPUs (default: 8)"
+            echo "  --output_dir DIR       Output directory (default: experiments/phase1)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# ============== Configuration (with defaults) ==============
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 NUM_SAMPLES="${NUM_SAMPLES:-500}"
 VAL_SAMPLES="${VAL_SAMPLES:-1000}"  # validation samples
@@ -26,6 +87,19 @@ NUM_GPUS="${NUM_GPUS:-8}"
 # Output directory
 OUTPUT_DIR="${OUTPUT_DIR:-experiments/phase1}"
 mkdir -p "$OUTPUT_DIR"
+
+# Print configuration
+echo "============== Configuration =============="
+echo "MODEL:       $MODEL"
+echo "NUM_SAMPLES: $NUM_SAMPLES"
+echo "VAL_SAMPLES: $VAL_SAMPLES"
+echo "NUM_TRIALS:  $NUM_TRIALS"
+echo "NUM_EPOCHS:  $NUM_EPOCHS"
+echo "BATCH_SIZE:  $BATCH_SIZE"
+echo "LR:          $LR"
+echo "NUM_GPUS:    $NUM_GPUS"
+echo "OUTPUT_DIR:  $OUTPUT_DIR"
+echo "==========================================="
 
 # ============== Helper Functions ==============
 log() {
