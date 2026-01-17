@@ -47,9 +47,7 @@ def _worker_init(
     device = f"cuda:{rank}"
     torch.cuda.set_device(rank)
 
-    print(f"[Worker {rank}] Loading model on {device}...")
-
-    # Load model and tokenizer
+    # Load model and tokenizer (quietly)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -62,7 +60,6 @@ def _worker_init(
     if lora_path and lora_path.lower() != "none":
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, lora_path)
-        print(f"[Worker {rank}] Loaded LoRA adapter from {lora_path}")
 
     model.eval()
 
@@ -70,7 +67,6 @@ def _worker_init(
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    print(f"[Worker {rank}] Model loaded, ready to process")
     ready_event.set()  # Signal that this worker is ready
 
     # Process tasks from queue
@@ -79,7 +75,6 @@ def _worker_init(
             task = input_queue.get(timeout=1.0)
 
             if task is None:  # Poison pill - shutdown signal
-                print(f"[Worker {rank}] Shutting down")
                 break
 
             task_id, prompts = task
@@ -116,8 +111,7 @@ def _worker_init(
 
         except Empty:
             continue
-        except Exception as e:
-            print(f"[Worker {rank}] Error: {e}")
+        except Exception:
             continue
 
     # Cleanup
@@ -157,9 +151,7 @@ class MultiGPUInference:
         if self.num_gpus == 0:
             raise RuntimeError("No GPUs available for multi-GPU inference")
 
-        print(f"MultiGPUInference: Using {self.num_gpus} GPUs")
-        if lora_path and lora_path.lower() != "none":
-            print(f"MultiGPUInference: Loading LoRA adapter from {lora_path}")
+        print(f"Loading model on {self.num_gpus} GPUs...")
 
         # Initialize multiprocessing
         mp.set_start_method('spawn', force=True)
@@ -195,11 +187,9 @@ class MultiGPUInference:
             self.ready_events.append(ready_event)
 
         # Wait for all workers to be ready
-        print("Waiting for all workers to load models...")
-        for i, event in enumerate(self.ready_events):
+        for event in self.ready_events:
             event.wait()
-            print(f"  Worker {i} ready")
-        print("All workers ready!")
+        print(f"Model loaded on {self.num_gpus} GPUs")
 
     def __del__(self):
         self.shutdown()
@@ -245,7 +235,6 @@ class MultiGPUInference:
         results = {}
         total_batches = len(batches)
 
-        print(f"[MultiGPU] Received {len(prompts)} prompts, batch_size={self.inference_batch_size}, total_batches={total_batches}")
 
         for task_id, batch in enumerate(batches):
             worker_id = task_id % self.num_gpus
@@ -299,8 +288,6 @@ class MultiGPUInference:
             prompt = prompt_formatter(sample)
             all_prompts.extend([prompt] * num_trials)
 
-        print(f"Processing {len(samples)} samples × {num_trials} trials = {len(all_prompts)} prompts")
-        print(f"Using {self.num_gpus} GPUs with batch size {self.inference_batch_size}")
 
         # Batch generate all responses
         all_responses = self.generate_batch(all_prompts)

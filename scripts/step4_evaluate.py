@@ -220,10 +220,6 @@ def main():
     parser.add_argument("--num_gpus", type=int, default=None,
                         help="Number of GPUs to use for inference (default: all available)")
 
-    # Output options
-    parser.add_argument("--print_confusion_matrix", action="store_true",
-                        help="Print confusion matrix in parseable format")
-
     args = parser.parse_args()
 
     print(f"Loading TriviaQA {args.split} split...")
@@ -272,38 +268,6 @@ def main():
     actual = metrics["actual_counts"]
     print(f"\nPredicted distribution: can={pred['can']}, uncertain={pred['uncertain']}, cannot={pred['cannot']}")
     print(f"Actual distribution:    can={actual['can']}, uncertain={actual['uncertain']}, cannot={actual['cannot']}")
-
-    # Print parseable confusion matrix if requested
-    if args.print_confusion_matrix:
-        # Format: CM:actual,pred=count|actual,pred=count|...
-        labels = ["can", "uncertain", "cannot"]
-        cm_parts = []
-        for actual_label in labels:
-            for pred_label in labels:
-                count = c[f"{pred_label}_{actual_label}"]
-                cm_parts.append(f"{actual_label},{pred_label}={count}")
-        print(f"CM:{('|').join(cm_parts)}")
-
-    # Show some examples
-    print("\n" + "=" * 60)
-    print("EXAMPLE PREDICTIONS")
-    print("=" * 60)
-
-    # Show some correct predictions
-    correct = [r for r in results if r["predicted"] == r["actual"]][:3]
-    if correct:
-        print("\n--- Correct Predictions ---")
-        for r in correct:
-            print(f"Q: {r['question'][:80]}...")
-            print(f"   Predicted: {r['predicted']}, Actual: {r['actual']} (acc: {r['accuracy']*100:.0f}%)")
-
-    # Show some wrong predictions
-    wrong = [r for r in results if r["predicted"] != r["actual"]][:3]
-    if wrong:
-        print("\n--- Wrong Predictions ---")
-        for r in wrong:
-            print(f"Q: {r['question'][:80]}...")
-            print(f"   Predicted: {r['predicted']}, Actual: {r['actual']} (acc: {r['accuracy']*100:.0f}%)")
 
     print("\nDone!")
 

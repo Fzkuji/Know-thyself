@@ -16,7 +16,7 @@ set -e  # Exit on error
 # ============== Configuration ==============
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 NUM_SAMPLES="${NUM_SAMPLES:-500}"
-TEST_SAMPLES="${TEST_SAMPLES:-1000}"
+VAL_SAMPLES="${VAL_SAMPLES:-1000}"  # validation samples
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
@@ -36,26 +36,26 @@ log() {
 log "Step 0: Baseline evaluation (before any training)"
 
 if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ]; then
+    # Evaluate on training samples (same samples used for training)
     python scripts/step4_evaluate.py \
         --model "$MODEL" \
         --lora_path none \
         --split train \
-        --num_samples "$TEST_SAMPLES" \
+        --num_samples "$NUM_SAMPLES" \
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
-        --print_confusion_matrix \
         2>&1 | tee "$OUTPUT_DIR/baseline_train.log"
 
+    # Evaluate on validation samples
     python scripts/step4_evaluate.py \
         --model "$MODEL" \
         --lora_path none \
         --split validation \
-        --num_samples "$TEST_SAMPLES" \
+        --num_samples "$VAL_SAMPLES" \
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
-        --print_confusion_matrix \
         2>&1 | tee "$OUTPUT_DIR/baseline_val.log"
 
     echo '{"status": "completed"}' > "$OUTPUT_DIR/baseline_eval.json"
@@ -122,19 +122,6 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         log "Epoch $epoch already completed, skipping to evaluation"
         CURRENT_MODEL="$EPOCH_OUTPUT"
     else
-        # Evaluate BEFORE training this epoch (to see starting point)
-        log "Pre-training evaluation for epoch $epoch..."
-        python scripts/step4_evaluate.py \
-            --model "$CURRENT_MODEL" \
-            --lora_path none \
-            --split train \
-            --num_samples "$TEST_SAMPLES" \
-            --num_trials "$NUM_TRIALS" \
-            --inference_batch_size "$BATCH_SIZE" \
-            --num_gpus "$NUM_GPUS" \
-            --print_confusion_matrix \
-            2>&1 | tee "$EPOCH_OUTPUT/eval_before_train.log"
-
         # Train one epoch
         log "Training epoch $epoch..."
         # Use set -o pipefail to catch errors through pipe
@@ -164,28 +151,28 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
     fi
 
     # Evaluate after this epoch (always run to see progress)
-    log "Evaluating epoch $epoch (train split)..."
+    # 1. Evaluate on training samples (same samples used for training)
+    log "Evaluating epoch $epoch on training samples ($NUM_SAMPLES)..."
     python scripts/step4_evaluate.py \
         --model "$CURRENT_MODEL" \
         --lora_path none \
         --split train \
-        --num_samples "$TEST_SAMPLES" \
+        --num_samples "$NUM_SAMPLES" \
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
-        --print_confusion_matrix \
         2>&1 | tee "$EPOCH_OUTPUT/eval_train.log"
 
-    log "Evaluating epoch $epoch (validation split)..."
+    # 2. Evaluate on validation samples
+    log "Evaluating epoch $epoch on validation samples ($VAL_SAMPLES)..."
     python scripts/step4_evaluate.py \
         --model "$CURRENT_MODEL" \
         --lora_path none \
         --split validation \
-        --num_samples "$TEST_SAMPLES" \
+        --num_samples "$VAL_SAMPLES" \
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
-        --print_confusion_matrix \
         2>&1 | tee "$EPOCH_OUTPUT/eval_val.log"
 
     log "Epoch $epoch evaluation complete"
