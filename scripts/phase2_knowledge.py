@@ -4,16 +4,16 @@ Phase 2: Knowledge Learning
 Train the model to learn factual knowledge by teaching it to answer questions correctly.
 This is different from judgment training - here we teach knowledge, not metacognition.
 
-Supports two training modes:
+Supports training modes:
 - Standard: Fixed epochs with batch training
 - Adaptive: Train each sample until learned (tested after each step)
 - DDP: Multi-GPU training with gradient synchronization
+- Always uses full fine-tuning (no LoRA)
 
 Steps:
 2.1 Build QA training data from training samples
-2.2 Train model with QA data -> LoRA_knowledge
-2.3 Merge adapter into base -> base_with_knowledge
-2.4 Test if model learned the knowledge
+2.2 Train model with QA data -> knowledge (full model)
+2.3 Test if model learned the knowledge
 """
 
 import argparse
@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.dataset_builder import load_from_jsonl, save_to_jsonl, prepare_dataset_for_training
 from src.knowledge_trainer import build_qa_dataset
 from src.trainer import setup_model_for_training, train_metacognition
-from src.adapter_utils import merge_adapter_into_base
 from src.multi_gpu_inference import create_inference
 from src.evaluator import is_correct
 from src.pipeline import MultiPhasePipeline
@@ -176,16 +175,12 @@ def main():
                         help="Input file with questions and answers (from Phase 1)")
     parser.add_argument("--output_dir", type=str,
                         default=str(project_root / "outputs/phase2_knowledge"))
-    parser.add_argument("--epochs", type=int, default=15,
-                        help="Number of epochs (default: 15 for adaptive)")
+    parser.add_argument("--epochs", type=int, default=10,
+                        help="Number of epochs (default: 10 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="1e-4 for LoRA, 1e-5 for full fine-tuning")
+    parser.add_argument("--lr", type=float, default=1e-5,
+                        help="Learning rate for full fine-tuning")
     parser.add_argument("--inference_batch_size", type=int, default=16)
-    parser.add_argument("--no_lora", action="store_true",
-                        help="Disable LoRA for full fine-tuning")
-    parser.add_argument("--no_merge", action="store_true",
-                        help="Don't merge adapter into base model")
     parser.add_argument("--test_samples", type=int, default=100,
                         help="Number of samples to test knowledge acquisition")
     parser.add_argument("--adaptive", action="store_true", default=True,
@@ -287,12 +282,12 @@ def main():
     # Step 2.3: Setup model and train
     if is_main_process():
         print(f"\nSetting up model: {args.model}")
-        print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+        print(f"Training mode: Full fine-tuning")
         print(f"Adaptive training: {args.adaptive}")
         print(f"DDP: {args.ddp}")
     model, tokenizer = setup_model_for_training(
         args.model,
-        use_lora=not args.no_lora,
+        use_lora=False,  # Always use full fine-tuning
         ddp=args.ddp,
         local_rank=local_rank,
     )
@@ -401,7 +396,7 @@ def main():
             num_epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
-            use_lora=not args.no_lora,
+            use_lora=False,  # Always use full fine-tuning
         )
 
     # DDP cleanup and post-training steps (only on main process for DDP)
@@ -415,54 +410,15 @@ def main():
     if is_main_process():
         print(f"\nKnowledge model saved to {adapter_path}")
 
-    # Step 2.4: Merge adapter into base model (or use full fine-tuned model directly)
-    merged_path = None
-    eval_model = None
-    eval_tokenizer = None
-
-    if args.no_lora:
-        # Full fine-tuning: the trained model is already complete, use it directly
-        merged_path = adapter_path  # adapter_path contains the full model
-        eval_model = model  # Reuse training model
-        eval_tokenizer = tokenizer
-        if is_main_process():
-            print(f"\nFull fine-tuning: Model saved directly to {merged_path}")
-    elif not args.no_merge:
-        merged_path = output_dir / "base_with_knowledge"
-        if is_main_process():
-            # Need to clean up training model before merging to free GPU memory
-            del model
-            del tokenizer
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            time.sleep(1.0)
-            print("Cleaned up training model from GPU memory")
-
-            print(f"\nMerging adapter into base model...")
-            merge_adapter_into_base(
-                args.model,
-                str(adapter_path),
-                str(merged_path)
-            )
-            print(f"Merged model saved to {merged_path}")
-
-            # Load merged model for evaluation
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            print("Loading merged model for evaluation...")
-            eval_model = AutoModelForCausalLM.from_pretrained(
-                str(merged_path),
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-            eval_tokenizer = AutoTokenizer.from_pretrained(str(merged_path), trust_remote_code=True)
-            if eval_tokenizer.pad_token is None:
-                eval_tokenizer.pad_token = eval_tokenizer.eos_token
+    # Step 2.4: Full fine-tuning - the trained model is already complete
+    # Use the trained model directly for evaluation
+    eval_model = model  # Reuse training model
+    eval_tokenizer = tokenizer
+    if is_main_process():
+        print(f"\nFull fine-tuning: Model saved directly to {adapter_path}")
 
     # Step 2.5: Test knowledge acquisition using pre-loaded model
-    test_model_path = str(merged_path) if merged_path else args.model
+    test_model_path = str(adapter_path)
 
     if is_main_process() and eval_model is not None:
         print(f"\n--- After-training evaluation on TRAIN split ---")
@@ -522,7 +478,6 @@ def main():
             output_paths={
                 "qa_data": str(qa_data_path),
                 "knowledge": str(adapter_path),
-                "base_with_knowledge": str(merged_path) if merged_path else "",
             }
         )
         pipeline.print_summary()
@@ -531,8 +486,7 @@ def main():
         print("\n" + "=" * 60)
         print("Phase 2 (Knowledge Learning) completed!")
         print("=" * 60)
-        if merged_path:
-            print(f"Next step: Use '{merged_path}' as base model for Phase 3")
+        print(f"Next step: Use '{adapter_path}' as base model for Phase 3")
 
     # Final DDP cleanup
     if args.ddp:

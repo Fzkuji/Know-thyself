@@ -284,7 +284,7 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "batch_size": args.batch_size,
         "inference_batch_size": args.inference_batch_size,
         "learning_rate": args.lr,
-        "no_lora": args.no_lora,
+        "training_mode": "full_fine_tuning",  # Always full fine-tuning, no LoRA
         "adaptive": args.adaptive,
         "max_steps_per_sample": args.max_steps_per_sample,
         "num_gpus": args.num_gpus,
@@ -298,33 +298,24 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
     return config
 
 
-def is_phase_completed(phase: int, pipeline: MultiPhasePipeline, args) -> bool:
+def is_phase_completed(phase: int, pipeline: MultiPhasePipeline) -> bool:
     """Check if a phase has already been completed."""
     if phase == 1:
         phase_output = pipeline.get_phase_output_dir("phase1_judgment")
-        # Check if judgment_v1 model exists
-        if args.no_lora:
-            marker = phase_output / "judgment_v1" / "config.json"
-        else:
-            marker = phase_output / "judgment_v1" / "adapter_config.json"
+        # Check if judgment_v1 model exists (full fine-tuning)
+        marker = phase_output / "judgment_v1" / "config.json"
         return marker.exists()
 
     elif phase == 2:
         phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
-        # Check if knowledge model exists (full fine-tuning or merged)
-        if args.no_lora:
-            marker = phase_output / "knowledge" / "config.json"
-        else:
-            marker = phase_output / "base_with_knowledge" / "config.json"
+        # Check if knowledge model exists (full fine-tuning)
+        marker = phase_output / "knowledge" / "config.json"
         return marker.exists()
 
     elif phase == 3:
         phase_output = pipeline.get_phase_output_dir("phase3_judgment")
-        # Check if judgment_v2 model exists
-        if args.no_lora:
-            marker = phase_output / "judgment_v2" / "config.json"
-        else:
-            marker = phase_output / "judgment_v2" / "adapter_config.json"
+        # Check if judgment_v2 model exists (full fine-tuning)
+        marker = phase_output / "judgment_v2" / "config.json"
         return marker.exists()
 
     return False
@@ -471,8 +462,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline, force: bool = False):
             "--max_steps_per_sample", str(args.max_steps_per_sample),
             "--skip_correct",  # Skip samples already judged correctly
         ]
-        if args.no_lora:
-            cmd.append("--no_lora")
         if args.adaptive:
             cmd.append("--adaptive")
         subprocess.run(cmd, check=True)
@@ -493,13 +482,9 @@ def run_phase1(args, pipeline: MultiPhasePipeline, force: bool = False):
     else:
         print("\n[Step 1.5] Evaluating AFTER training...")
 
-        # For full fine-tuning, use trained model directly; for LoRA, use base + adapter
-        if args.no_lora:
-            eval_model = str(phase_output / "judgment_v1")  # Full model saved here
-            eval_lora = "none"
-        else:
-            eval_model = args.model
-            eval_lora = str(phase_output / "judgment_v1")
+        # Full fine-tuning: use trained model directly
+        eval_model = str(phase_output / "judgment_v1")
+        eval_lora = "none"
 
         print("\n[Step 1.5a] After training on TRAIN split...")
         cmd = [
@@ -533,18 +518,8 @@ def run_phase1(args, pipeline: MultiPhasePipeline, force: bool = False):
 
         # QA evaluation after training (to verify judgment training didn't hurt QA)
         print("\n[Step 1.5c] After training QA accuracy...")
-        # For QA test, use the trained model path
-        qa_model = eval_model if args.no_lora else str(phase_output / "judgment_v1")
-        # Note: For LoRA, we need to load base + adapter for QA test
-        # But the simple approach is to test with base model since judgment LoRA
-        # shouldn't affect QA much. For full fine-tuning, use trained model.
-        if args.no_lora:
-            qa_test_model = eval_model
-        else:
-            # For LoRA judgment training, QA ability should be same as base model
-            # since we only trained judgment task. But let's test the merged model
-            # if available, otherwise test base model.
-            qa_test_model = args.model  # Base model (judgment LoRA shouldn't affect QA)
+        # Full fine-tuning: use trained model directly
+        qa_test_model = eval_model
 
         qa_after_train = test_qa_accuracy(
             qa_test_model, split="train", num_samples=args.test_samples,
@@ -612,15 +587,24 @@ def run_phase2(args, pipeline: MultiPhasePipeline, force: bool = False):
         # Fallback to default location
         input_path = project_root / "data/step1_responses.jsonl"
 
+    # Use Phase 1 trained model as base for Phase 2 (full fine-tuning continuity)
+    phase1_model = phase1_output / "judgment_v1"
+    if phase1_model.exists():
+        phase2_base_model = str(phase1_model)
+        print(f"Using Phase 1 trained model: {phase2_base_model}")
+    else:
+        phase2_base_model = args.model
+        print(f"Warning: Phase 1 model not found, using original: {phase2_base_model}")
+
     # Step 2.1-2.4: Knowledge training (handled by phase2_knowledge.py)
-    # The script handles: build QA data, train, merge, and test
+    # The script handles: build QA data, train, and test
     step_name = "step2_knowledge_training"
     if pipeline.is_step_completed(phase_name, step_name) and not force:
         print("\n[Phase 2] Knowledge training already done, skipping...")
     else:
         cmd = [
             sys.executable, str(project_root / "scripts/phase2_knowledge.py"),
-            "--model", args.model,
+            "--model", phase2_base_model,
             "--input", str(input_path),
             "--output_dir", str(phase2_output),
             "--epochs", str(args.knowledge_epochs),
@@ -635,8 +619,6 @@ def run_phase2(args, pipeline: MultiPhasePipeline, force: bool = False):
             # Pass experiment name for metrics saving
             "--experiment", pipeline.experiment_name,
         ]
-        if args.no_lora:
-            cmd.append("--no_lora")
         if args.adaptive:
             cmd.append("--adaptive")
         if args.num_gpus is not None:
@@ -666,15 +648,8 @@ def run_phase3(args, pipeline: MultiPhasePipeline, force: bool = False):
     if force:
         pipeline.clear_phase_steps(phase_name)
 
-    # Use knowledge model from Phase 2
-    # For LoRA: merged model at base_with_knowledge
-    # For full fine-tuning: model at knowledge
-    if args.no_lora:
-        # Full fine-tuning: model saved directly
-        base_model = phase2_output / "knowledge"
-    else:
-        # LoRA: use merged model
-        base_model = phase2_output / "base_with_knowledge"
+    # Use knowledge model from Phase 2 (full fine-tuning: model saved directly)
+    base_model = phase2_output / "knowledge"
 
     if not base_model.exists():
         print(f"Warning: Knowledge model not found at {base_model}")
@@ -712,8 +687,6 @@ def run_phase3(args, pipeline: MultiPhasePipeline, force: bool = False):
             # Pass experiment name for metrics saving
             "--experiment", pipeline.experiment_name,
         ]
-        if args.no_lora:
-            cmd.append("--no_lora")
         if args.adaptive:
             cmd.append("--adaptive")
         if args.num_gpus is not None:
@@ -759,16 +732,14 @@ def main():
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
-    # Training params
-    parser.add_argument("--epochs", type=int, default=15,
-                        help="Epochs for judgment training (default: 15 for adaptive)")
-    parser.add_argument("--knowledge_epochs", type=int, default=15,
-                        help="Epochs for knowledge training (default: 15 for adaptive)")
+    # Training params (always full fine-tuning, no LoRA)
+    parser.add_argument("--epochs", type=int, default=10,
+                        help="Epochs for judgment training (default: 10 for adaptive)")
+    parser.add_argument("--knowledge_epochs", type=int, default=10,
+                        help="Epochs for knowledge training (default: 10 for adaptive)")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="Learning rate (1e-4 for LoRA, 1e-5 for full fine-tuning)")
-    parser.add_argument("--no_lora", action="store_true",
-                        help="Disable LoRA for full fine-tuning")
+    parser.add_argument("--lr", type=float, default=1e-5,
+                        help="Learning rate for full fine-tuning")
     parser.add_argument("--adaptive", action="store_true", default=True,
                         help="Use adaptive training (train each sample until learned)")
     parser.add_argument("--max_steps_per_sample", type=int, default=10,
@@ -867,7 +838,7 @@ def main():
     # Execute phases
     for phase in phases_to_run:
         # Check if phase already completed (unless --force)
-        if not args.force and is_phase_completed(phase, pipeline, args):
+        if not args.force and is_phase_completed(phase, pipeline):
             print(f"\n{'=' * 60}")
             print(f"Phase {phase} already completed, skipping...")
             print(f"(Use --force to re-run)")

@@ -8,11 +8,12 @@ Supports training modes:
 - Standard: Fixed epochs with batch training
 - Adaptive: Train each sample until correct
 - DDP: Multi-GPU training with gradient synchronization
+- Always uses full fine-tuning (no LoRA)
 
 Steps:
-3.1 Re-collect responses using base_with_knowledge model
+3.1 Re-collect responses using knowledge model
 3.2 Build new labels (most should be "yes" now)
-3.3 Train updated judgment -> LoRA_judgment_v2
+3.3 Train updated judgment -> judgment_v2 (full model)
 3.4 Final evaluation
 """
 
@@ -303,12 +304,10 @@ def main():
     # Training params
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_trials", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="1e-4 for LoRA, 1e-5 for full fine-tuning")
-    parser.add_argument("--no_lora", action="store_true",
-                        help="Disable LoRA for full fine-tuning")
+    parser.add_argument("--lr", type=float, default=1e-5,
+                        help="Learning rate for full fine-tuning")
     parser.add_argument("--inference_batch_size", type=int, default=16)
     parser.add_argument("--adaptive", action="store_true", default=True,
                         help="Use adaptive training (train each sample until correct)")
@@ -406,12 +405,12 @@ def main():
     if is_main_process():
         print(f"\nSetting up model for judgment training...")
         print(f"Base: {args.base_model}")
-        print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+        print(f"Training mode: Full fine-tuning")
         print(f"Adaptive training: {args.adaptive}")
         print(f"DDP: {args.ddp}")
     model, tokenizer = setup_model_for_training(
         args.base_model,
-        use_lora=not args.no_lora,
+        use_lora=False,  # Always use full fine-tuning
         ddp=args.ddp,
         local_rank=local_rank,
     )
@@ -499,7 +498,7 @@ def main():
             num_epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
-            use_lora=not args.no_lora,
+            use_lora=False,  # Always use full fine-tuning
         )
 
     # DDP cleanup and post-training steps (only on main process for DDP)
@@ -547,24 +546,14 @@ def main():
     print(f"Exact Match: {before_train_eval['exact_match_rate']*100:.1f}%")
 
     print("\nAfter judgment v2 training on TRAIN:")
-    if args.no_lora:
-        # Full fine-tuning: model is saved directly in adapter_path
-        after_train_eval = evaluate_judgment(
-            model_path=str(adapter_path),
-            samples=train_test_samples,
-            adapter_path=None,
-            inference_batch_size=args.inference_batch_size,
-            num_gpus=args.num_gpus,
-        )
-    else:
-        # LoRA: use base model + adapter
-        after_train_eval = evaluate_judgment(
-            model_path=args.base_model,
-            samples=train_test_samples,
-            adapter_path=str(adapter_path),
-            inference_batch_size=args.inference_batch_size,
-            num_gpus=args.num_gpus,
-        )
+    # Full fine-tuning: model is saved directly in adapter_path
+    after_train_eval = evaluate_judgment(
+        model_path=str(adapter_path),
+        samples=train_test_samples,
+        adapter_path=None,
+        inference_batch_size=args.inference_batch_size,
+        num_gpus=args.num_gpus,
+    )
     print(f"Exact Match: {after_train_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_train_eval['predicted_distribution']}")
     print(f"Actual: {after_train_eval['actual_distribution']}")
@@ -602,24 +591,14 @@ def main():
     print(f"Exact Match: {before_val_eval['exact_match_rate']*100:.1f}%")
 
     print("\nAfter judgment v2 training on VALIDATION:")
-    if args.no_lora:
-        # Full fine-tuning: model is saved directly in adapter_path
-        after_val_eval = evaluate_judgment(
-            model_path=str(adapter_path),
-            samples=val_test_samples,
-            adapter_path=None,
-            inference_batch_size=args.inference_batch_size,
-            num_gpus=args.num_gpus,
-        )
-    else:
-        # LoRA: use base model + adapter
-        after_val_eval = evaluate_judgment(
-            model_path=args.base_model,
-            samples=val_test_samples,
-            adapter_path=str(adapter_path),
-            inference_batch_size=args.inference_batch_size,
-            num_gpus=args.num_gpus,
-        )
+    # Full fine-tuning: model is saved directly in adapter_path
+    after_val_eval = evaluate_judgment(
+        model_path=str(adapter_path),
+        samples=val_test_samples,
+        adapter_path=None,
+        inference_batch_size=args.inference_batch_size,
+        num_gpus=args.num_gpus,
+    )
     print(f"Exact Match: {after_val_eval['exact_match_rate']*100:.1f}%")
     print(f"Predicted: {after_val_eval['predicted_distribution']}")
     print(f"Actual: {after_val_eval['actual_distribution']}")
@@ -658,11 +637,8 @@ def main():
 
     # After judgment v2 training
     print("\nAfter judgment v2 training QA:")
-    if args.no_lora:
-        qa_test_model = str(adapter_path)
-    else:
-        # For LoRA judgment training on knowledge model, QA should remain same
-        qa_test_model = args.base_model
+    # Full fine-tuning: use the trained model directly
+    qa_test_model = str(adapter_path)
 
     qa_after_train = test_qa_accuracy(
         qa_test_model, split="train", num_samples=args.test_samples,
@@ -730,7 +706,7 @@ def main():
         print("\n" + "=" * 60)
         print("Phase 3 (Update Judgment) completed!")
         print("=" * 60)
-        print(f"\nFinal model: {args.base_model} + {adapter_path}")
+        print(f"\nFinal model: {adapter_path}")
 
     # Final DDP cleanup
     if args.ddp:

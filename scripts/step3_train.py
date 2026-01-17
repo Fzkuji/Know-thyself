@@ -24,10 +24,9 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--input", type=str, default=str(project_root / "data/step2_training_data.jsonl"))
     parser.add_argument("--output_dir", type=str, default=str(project_root / "outputs/metacog"))
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4, help="1e-4 for LoRA, 1e-5 for full fine-tuning")
-    parser.add_argument("--no_lora", action="store_true", help="Disable LoRA")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for full fine-tuning")
     parser.add_argument("--adaptive", action="store_true", default=True,
                         help="Use adaptive training (train each sample until correct)")
     parser.add_argument("--max_steps_per_sample", type=int, default=10,
@@ -56,13 +55,13 @@ def main():
 
     if is_main_process():
         print(f"Setting up model: {args.model}")
-        print(f"Training mode: {'Full fine-tuning' if args.no_lora else 'LoRA'}")
+        print(f"Training mode: Full fine-tuning")
         print(f"Adaptive training: {args.adaptive}")
         print(f"DDP: {args.ddp}")
 
     model, tokenizer = setup_model_for_training(
         args.model,
-        use_lora=not args.no_lora,
+        use_lora=False,  # Always use full fine-tuning
         ddp=args.ddp,
         local_rank=local_rank,
     )
@@ -149,7 +148,7 @@ def main():
             num_epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
-            use_lora=not args.no_lora,
+            use_lora=False,  # Always use full fine-tuning
         )
 
     print(f"Model saved to {args.output_dir}")

@@ -11,19 +11,19 @@
 
 set -e  # Exit on error
 
-# Default parameters
+# Default parameters (always full fine-tuning, no LoRA)
 MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 TRAIN_SAMPLES=1000
 TEST_SAMPLES=100
 DATASET="triviaqa"
 INFERENCE_BATCH_SIZE=16
 TRAIN_BATCH_SIZE=32
-NO_LORA="false"
-EPOCHS=15
-KNOWLEDGE_EPOCHS=15
+EPOCHS=10
+KNOWLEDGE_EPOCHS=10
 NUM_TRIALS=5
 ADAPTIVE="true"
 MAX_STEPS_PER_SAMPLE=10
+LR="1e-5"  # Learning rate for full fine-tuning
 FORCE="false"
 EXPERIMENT=""
 PHASE=""
@@ -46,7 +46,7 @@ show_help() {
     echo "  --knowledge_epochs    Epochs for knowledge training (default: 10)"
     echo "  --num_trials          Responses per question (default: 5)"
     echo "  --max_steps           Max steps per sample in adaptive training (default: 10)"
-    echo "  --no_lora             Use full fine-tuning instead of LoRA"
+    echo "  --lr                  Learning rate (default: 1e-5 for full fine-tuning)"
     echo "  --no_adaptive         Disable adaptive training (use standard batch training)"
     echo "  --experiment          Experiment name (to resume or re-run specific experiment)"
     echo "  --phase               Run specific phase only (1, 2, or 3)"
@@ -56,7 +56,7 @@ show_help() {
     echo "  --ddp                 Use DDP for multi-GPU training (gradient sync across GPUs)"
     echo "  --help                Show this help message"
     echo ""
-    echo "Training modes:"
+    echo "Training modes (always full fine-tuning):"
     echo "  - Single GPU training + Multi-GPU inference (default)"
     echo "  - DDP training + Multi-GPU inference (use --ddp)"
     echo ""
@@ -65,14 +65,14 @@ show_help() {
     echo "  - Standard: Fixed epochs with batch training (use --no_adaptive)"
     echo ""
     echo "Examples:"
-    echo "  # Adaptive training with LoRA (default)"
+    echo "  # Adaptive training with full fine-tuning (default)"
     echo "  bash run_multiphase_pipeline.sh --model Qwen/Qwen2.5-0.5B-Instruct --train_samples 10000"
     echo ""
     echo "  # Standard batch training with full fine-tuning"
-    echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_lora --no_adaptive"
+    echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_adaptive"
     echo ""
     echo "  # DDP training with full fine-tuning (multi-GPU gradient sync)"
-    echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --no_lora --ddp"
+    echo "  bash run_multiphase_pipeline.sh --train_samples 10000 --ddp"
     echo ""
     echo "  # Print summary of existing experiment"
     echo "  bash run_multiphase_pipeline.sh --summary --experiment Qwen2.5-7B_triviaqa_train1000_test100_0115_1430"
@@ -122,9 +122,9 @@ while [[ $# -gt 0 ]]; do
             MAX_STEPS_PER_SAMPLE="$2"
             shift 2
             ;;
-        --no_lora)
-            NO_LORA="true"
-            shift
+        --lr)
+            LR="$2"
+            shift 2
             ;;
         --no_adaptive)
             ADAPTIVE="false"
@@ -165,14 +165,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Set learning rate based on training mode
-if [ "$NO_LORA" = "true" ]; then
-    LR="1e-5"
-    TRAINING_MODE="Full Fine-tuning"
-else
-    LR="1e-4"
-    TRAINING_MODE="LoRA"
-fi
+# Always use full fine-tuning
+TRAINING_MODE="Full Fine-tuning"
 
 PROJECT_ROOT=$(dirname "$0")
 
@@ -268,11 +262,6 @@ else
         --batch_size $TRAIN_BATCH_SIZE \
         --lr $LR \
         --max_steps_per_sample $MAX_STEPS_PER_SAMPLE"
-fi
-
-# Add --no_lora flag if full fine-tuning
-if [ "$NO_LORA" = "true" ]; then
-    CMD="$CMD --no_lora"
 fi
 
 # Add --adaptive flag if enabled

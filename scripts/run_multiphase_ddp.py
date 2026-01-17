@@ -37,10 +37,11 @@ from src.evaluator import evaluate_responses, classify_ability, is_correct
 from src.label_generator import build_training_dataset, SYSTEM_PROMPT
 from src.knowledge_trainer import build_qa_dataset
 from src.trainer import setup_model_for_training
-from src.adapter_utils import merge_adapter_into_base
 from tqdm import tqdm
 import re
 import subprocess
+import gc
+import time
 
 
 def is_main_process():
@@ -445,7 +446,7 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "knowledge_epochs": args.knowledge_epochs,
         "inference_batch_size": args.inference_batch_size,
         "learning_rate": args.lr,
-        "no_lora": args.no_lora,
+        "training_mode": "full_fine_tuning",  # Always full fine-tuning, no LoRA
         "adaptive": args.adaptive,
         "max_steps_per_sample": args.max_steps_per_sample,
         "ddp": args.ddp,
@@ -471,25 +472,14 @@ def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline, args)
         elif step == "1.2_training_data":
             return (phase_output / "training_data.jsonl").exists()
         elif step == "1.3_train":
-            if args.no_lora:
-                return (phase_output / "judgment_v1" / "config.json").exists()
-            else:
-                return (phase_output / "judgment_v1" / "adapter_config.json").exists()
+            return (phase_output / "judgment_v1" / "config.json").exists()
 
     elif phase == 2:
         phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
         if step == "2.1_qa_data":
             return (phase_output / "qa_training_data.jsonl").exists()
         elif step == "2.2_train":
-            if args.no_lora:
-                return (phase_output / "knowledge" / "config.json").exists()
-            else:
-                return (phase_output / "knowledge" / "adapter_config.json").exists()
-        elif step == "2.3_merge":
-            if args.no_lora:
-                return (phase_output / "knowledge" / "config.json").exists()
-            else:
-                return (phase_output / "base_with_knowledge" / "config.json").exists()
+            return (phase_output / "knowledge" / "config.json").exists()
 
     elif phase == 3:
         phase_output = pipeline.get_phase_output_dir("phase3_judgment")
@@ -498,10 +488,7 @@ def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline, args)
         elif step == "3.2_training_data":
             return (phase_output / "training_data_v2.jsonl").exists()
         elif step == "3.3_train":
-            if args.no_lora:
-                return (phase_output / "judgment_v2" / "config.json").exists()
-            else:
-                return (phase_output / "judgment_v2" / "adapter_config.json").exists()
+            return (phase_output / "judgment_v2" / "config.json").exists()
 
     return False
 
@@ -511,7 +498,7 @@ def is_phase_completed(phase: int, pipeline: MultiPhasePipeline, args) -> bool:
     if phase == 1:
         return is_step_completed(1, "1.3_train", pipeline, args)
     elif phase == 2:
-        return is_step_completed(2, "2.3_merge", pipeline, args)
+        return is_step_completed(2, "2.2_train", pipeline, args)
     elif phase == 3:
         return is_step_completed(3, "3.3_train", pipeline, args)
     return False
@@ -653,11 +640,11 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
                 tokenizer.pad_token = tokenizer.eos_token
     else:
         if is_main_process():
-            print(f"\n[Step 1.4] Training judgment ability with DDP...")
+            print(f"\n[Step 1.4] Training judgment ability with DDP (full fine-tuning)...")
 
         model, tokenizer = setup_model_for_training(
             args.model,
-            use_lora=not args.no_lora,
+            use_lora=False,  # Always use full fine-tuning
             ddp=args.ddp,
             local_rank=local_rank,
         )
@@ -734,9 +721,18 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         del raw_model
     if tokenizer is not None:
         del tokenizer
+    gc.collect()
     torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    time.sleep(1.0)
+    if is_main_process():
+        print("Cleaned up Phase 1 models from GPU memory")
 
-    # Record phase result
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Record phase result (full fine-tuning: model saved directly to judgment_v1)
     if is_main_process():
         pipeline.record_phase_result(
             phase_name="phase1_judgment",
@@ -756,7 +752,7 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
 # ============== Phase 2: Knowledge Learning ==============
 
 def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
-    """Run Phase 2: Knowledge learning."""
+    """Run Phase 2: Knowledge learning on top of Phase 1's judgment model."""
     if is_main_process():
         print("\n" + "=" * 60)
         print("Phase 2: Knowledge Learning (DDP)")
@@ -765,6 +761,19 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
     project_root = Path(__file__).resolve().parent.parent
     phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
     phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
+
+    # Determine base model for Phase 2: Use Phase 1's trained model (full fine-tuning)
+    phase1_model_path = phase1_output / "judgment_v1"
+    if phase1_model_path.exists():
+        phase2_base_model = str(phase1_model_path)
+        if is_main_process():
+            print(f"Using Phase 1 trained model: {phase2_base_model}")
+    else:
+        # Fallback to original base model if Phase 1 output not found
+        phase2_base_model = args.model
+        if is_main_process():
+            print(f"Warning: Phase 1 model not found at {phase1_model_path}")
+            print(f"Falling back to original base model: {phase2_base_model}")
 
     # Load Phase 1 responses
     input_path = phase1_output / "responses.jsonl"
@@ -801,14 +810,14 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
 
         print("\n[Step 2.2a] Baseline QA accuracy (train split)...")
         before_train = test_qa_accuracy(
-            args.model, train_test_samples, args.num_trials,
+            phase2_base_model, train_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
 
         print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
         before_val = test_qa_accuracy(
-            args.model, val_test_samples, args.num_trials,
+            phase2_base_model, val_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
@@ -842,11 +851,12 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
                 tokenizer.pad_token = tokenizer.eos_token
     else:
         if is_main_process():
-            print(f"\n[Step 2.3] Training knowledge model with DDP...")
+            print(f"\n[Step 2.3] Training knowledge model with DDP (full fine-tuning)...")
+            print(f"  Base model: {phase2_base_model}")
 
         model, tokenizer = setup_model_for_training(
-            args.model,
-            use_lora=not args.no_lora,
+            phase2_base_model,
+            use_lora=False,  # Always use full fine-tuning
             ddp=args.ddp,
             local_rank=local_rank,
         )
@@ -893,50 +903,7 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.4: Merge adapter (main process only)
-    merged_path = phase2_output / "base_with_knowledge"
-    if not args.force and is_step_completed(2, "2.3_merge", pipeline, args):
-        if is_main_process():
-            print(f"\n[Step 2.4] Merged model already exists at {merged_path}")
-    else:
-        if is_main_process():
-            if args.no_lora:
-                print(f"\n[Step 2.4] Full fine-tuning: model saved directly to {adapter_path}")
-                merged_path = adapter_path
-            else:
-                # Need to clean up model before merging to free GPU memory
-                if model is not None:
-                    del model
-                if raw_model is not None:
-                    del raw_model
-                if tokenizer is not None:
-                    del tokenizer
-                raw_model = None
-                tokenizer = None
-                torch.cuda.empty_cache()
-
-                print(f"\n[Step 2.4] Merging adapter into base model...")
-                merge_adapter_into_base(
-                    args.model,
-                    str(adapter_path),
-                    str(merged_path)
-                )
-                print(f"Merged model saved to {merged_path}")
-
-                # Load merged model for evaluation
-                from transformers import AutoModelForCausalLM, AutoTokenizer
-                print("Loading merged model for evaluation...")
-                raw_model = AutoModelForCausalLM.from_pretrained(
-                    str(merged_path),
-                    torch_dtype=torch.float16,
-                    device_map="auto",
-                    trust_remote_code=True,
-                )
-                tokenizer = AutoTokenizer.from_pretrained(str(merged_path), trust_remote_code=True)
-                if tokenizer.pad_token is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-
-    # Step 2.5: Test knowledge acquisition using pre-loaded model
+    # Step 2.4: Test knowledge acquisition using pre-loaded model (full fine-tuning, no merge needed)
     if is_main_process() and raw_model is not None:
         print("\n" + "=" * 60)
         print("Phase 2 After-Training Evaluation (Using Pre-loaded Model)")
@@ -946,9 +913,9 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
         val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
 
         # Test on TRAIN split
-        print("\n[Step 2.5a] After training QA accuracy (train split)...")
+        print("\n[Step 2.4a] After training QA accuracy (train split)...")
         after_train = test_qa_accuracy(
-            str(merged_path) if merged_path.exists() else str(adapter_path),
+            str(adapter_path),
             train_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus,
             model=raw_model, tokenizer=tokenizer
@@ -958,9 +925,9 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
         print(f"  Improvement: {train_improvement:+.1f}%")
 
         # Test on VALIDATION split
-        print("\n[Step 2.5b] After training QA accuracy (validation split)...")
+        print("\n[Step 2.4b] After training QA accuracy (validation split)...")
         after_val = test_qa_accuracy(
-            str(merged_path) if merged_path.exists() else str(adapter_path),
+            str(adapter_path),
             val_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus,
             model=raw_model, tokenizer=tokenizer
@@ -992,9 +959,15 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
         del raw_model
     if tokenizer is not None:
         del tokenizer
+    gc.collect()
     torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    time.sleep(1.0)
+    if is_main_process():
+        print("Cleaned up Phase 2 models from GPU memory")
 
-    # Record phase result
+    # Record phase result (full fine-tuning: model saved directly to knowledge/)
     if is_main_process():
         pipeline.record_phase_result(
             phase_name="phase2_knowledge",
@@ -1003,7 +976,6 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
             output_paths={
                 "qa_data": str(qa_data_path),
                 "knowledge": str(adapter_path),
-                "base_with_knowledge": str(merged_path) if not args.no_lora else str(adapter_path),
             }
         )
         pipeline.state.current_phase = 2
@@ -1025,16 +997,16 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
     phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
     phase3_output = pipeline.get_phase_output_dir("phase3_judgment")
 
-    # Get knowledge model path
-    if args.no_lora:
-        base_model = str(phase2_output / "knowledge")
-    else:
-        base_model = str(phase2_output / "base_with_knowledge")
+    # Get knowledge model path (full fine-tuning: model saved directly to knowledge/)
+    base_model = str(phase2_output / "knowledge")
 
     if not Path(base_model).exists():
         if is_main_process():
             print(f"Warning: Knowledge model not found at {base_model}, using original")
         base_model = args.model
+    else:
+        if is_main_process():
+            print(f"Using Phase 2 knowledge model: {base_model}")
 
     # Load Phase 1 responses for questions
     input_path = phase1_output / "responses.jsonl"
@@ -1117,11 +1089,12 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
             print(f"\n[Step 3.3] Judgment v2 model already trained at {adapter_path}")
     else:
         if is_main_process():
-            print(f"\n[Step 3.3] Training judgment v2 with DDP...")
+            print(f"\n[Step 3.3] Training judgment v2 with DDP (full fine-tuning)...")
+            print(f"  Base model: {base_model}")
 
         model, tokenizer = setup_model_for_training(
             base_model,
-            use_lora=not args.no_lora,
+            use_lora=False,  # Always use full fine-tuning
             ddp=args.ddp,
             local_rank=local_rank,
         )
@@ -1163,13 +1136,9 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("Phase 3 Evaluation: Final Assessment")
         print("=" * 60)
 
-        # Setup evaluation paths
-        if args.no_lora:
-            eval_model = str(adapter_path)
-            eval_lora = "none"
-        else:
-            eval_model = base_model  # base_with_knowledge
-            eval_lora = str(adapter_path)  # judgment_v2
+        # Setup evaluation paths (full fine-tuning: use judgment_v2 directly)
+        eval_model = str(adapter_path)
+        eval_lora = "none"
 
         # Judgment evaluation
         print("\n[Step 3.4a] Final JUDGMENT evaluation (train split)...")
@@ -1188,7 +1157,7 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n[Step 3.4c] Final QA accuracy (train split)...")
         train_samples_for_qa = original_samples[:args.test_samples]
         qa_train = test_qa_accuracy(
-            eval_model if args.no_lora else base_model, train_samples_for_qa,
+            eval_model, train_samples_for_qa,
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
         eval_results['qa_train'] = qa_train
@@ -1197,7 +1166,7 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n[Step 3.4d] Final QA accuracy (validation split)...")
         val_samples_for_qa = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_val = test_qa_accuracy(
-            eval_model if args.no_lora else base_model, val_samples_for_qa,
+            eval_model, val_samples_for_qa,
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
         eval_results['qa_val'] = qa_val
@@ -1266,12 +1235,11 @@ def main():
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
-    # Training params
-    parser.add_argument("--epochs", type=int, default=15)
-    parser.add_argument("--knowledge_epochs", type=int, default=15)
+    # Training params (always full fine-tuning, no LoRA)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--knowledge_epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--no_lora", action="store_true")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for full fine-tuning")
     parser.add_argument("--adaptive", action="store_true", default=True)
     parser.add_argument("--max_steps_per_sample", type=int, default=10)
 
