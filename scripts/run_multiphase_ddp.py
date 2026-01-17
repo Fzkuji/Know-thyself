@@ -1,11 +1,13 @@
 """
-Run Multi-phase Pipeline with DDP Support
+Run Multi-phase Pipeline with DDP Support (Refactored)
 
-DDP version of the three-phase training workflow. Uses DistributedDataParallel
-for multi-GPU training where each GPU processes different samples.
+DDP version of the three-phase training workflow. Uses a unified ModelManager
+to handle model lifecycle across phases, avoiding repeated load/unload cycles.
 
-Each phase's each step checks if already completed, loads previous results
-if done (unless --force flag is provided).
+Key design:
+- ModelManager: Centralized model lifecycle management
+- Phase functions: Only handle data prep, training logic, and evaluation
+- Main loop: Coordinates model state and phase transitions
 
 Usage:
     # Run with torchrun
@@ -28,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 import torch.distributed as dist
+import gc
 
 from src.pipeline import MultiPhasePipeline
 from src.dataset_builder import load_from_jsonl, save_to_jsonl
@@ -40,8 +43,6 @@ from src.trainer import setup_model_for_training
 from tqdm import tqdm
 import re
 import subprocess
-import gc
-import time
 
 
 def is_main_process():
@@ -63,6 +64,262 @@ def cleanup_ddp():
     """Clean up distributed training."""
     if dist.is_initialized():
         dist.destroy_process_group()
+
+
+# ============== ModelManager: Unified Model Lifecycle ==============
+
+class ModelManager:
+    """
+    Centralized model lifecycle management for multi-phase training.
+
+    Handles model loading, saving, and provides access to raw model for training.
+    Avoids repeated load/unload cycles between phases.
+    """
+
+    def __init__(self, ddp: bool, local_rank: int):
+        self.ddp = ddp
+        self.local_rank = local_rank
+        self.model = None
+        self.tokenizer = None
+        self.raw_model = None  # Unwrapped model (without DDP wrapper)
+        self.current_path = None
+
+    def is_loaded(self) -> bool:
+        """Check if a model is currently loaded."""
+        return self.model is not None
+
+    def load(self, model_path: str):
+        """
+        Load model for training.
+
+        If the same model is already loaded, skip reloading.
+        """
+        model_path = str(model_path)
+
+        if self.model is not None and self.current_path == model_path:
+            if is_main_process():
+                print(f"Model already loaded from {model_path}, skipping reload")
+            return
+
+        # If a different model is loaded, we need to handle the transition
+        # For simplicity, we allow loading a new model (overwriting the old one)
+        # The old model's weights are preserved if it was saved
+
+        if is_main_process():
+            print(f"\n[ModelManager] Loading model from: {model_path}")
+
+        self.model, self.tokenizer = setup_model_for_training(
+            model_path,
+            use_lora=False,  # Always full fine-tuning
+            ddp=self.ddp,
+            local_rank=self.local_rank,
+        )
+        self.current_path = model_path
+
+        # Get raw model (unwrapped from DDP)
+        if hasattr(self.model, 'module'):
+            self.raw_model = self.model.module
+        else:
+            self.raw_model = self.model
+
+        if is_main_process():
+            print(f"[ModelManager] Model loaded successfully")
+
+    def save(self, path: str):
+        """
+        Save current model to path.
+
+        Updates current_path to the new save location.
+        """
+        path = str(path)
+
+        if self.raw_model is None:
+            raise ValueError("No model loaded to save")
+
+        if is_main_process():
+            print(f"\n[ModelManager] Saving model to: {path}")
+            Path(path).mkdir(parents=True, exist_ok=True)
+            self.raw_model.save_pretrained(path)
+            self.tokenizer.save_pretrained(path)
+            print(f"[ModelManager] Model saved successfully")
+
+        self.current_path = path
+
+        # Synchronize
+        if dist.is_initialized():
+            dist.barrier()
+
+    def update_raw_model(self, raw_model):
+        """
+        Update raw_model reference after training.
+
+        Some trainers may modify the model in place, call this to ensure
+        raw_model reference is up to date.
+        """
+        self.raw_model = raw_model
+        if hasattr(self.model, 'module'):
+            # DDP wrapper - the module should already be updated
+            pass
+        else:
+            self.model = raw_model
+
+    def cleanup(self):
+        """
+        Release model and free GPU memory.
+
+        Call this before running inference that needs GPU memory.
+        """
+        if is_main_process():
+            print("\n[ModelManager] Cleaning up model from GPU memory...")
+
+        if self.model is not None:
+            del self.model
+        if self.raw_model is not None:
+            del self.raw_model
+        if self.tokenizer is not None:
+            del self.tokenizer
+
+        self.model = None
+        self.raw_model = None
+        self.tokenizer = None
+        self.current_path = None
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        if is_main_process():
+            print("[ModelManager] Cleanup complete")
+
+    def batch_inference(
+        self,
+        samples: list,
+        num_trials: int = 3,
+        prompt_formatter=None,
+        max_new_tokens: int = 128,
+        temperature: float = 1.0,
+        batch_size: int = 4,
+    ) -> list:
+        """
+        Run batch inference using the already-loaded model.
+
+        Only main process runs inference; results are broadcast to all processes.
+
+        Args:
+            samples: List of sample dicts
+            num_trials: Number of responses per sample
+            prompt_formatter: Function to format sample into prompt
+            max_new_tokens: Max tokens to generate
+            temperature: Sampling temperature
+            batch_size: Batch size for generation
+
+        Returns:
+            List of samples with 'responses' field added
+        """
+        if self.raw_model is None:
+            raise ValueError("No model loaded for inference")
+
+        if prompt_formatter is None:
+            prompt_formatter = lambda s: f"Question: {s['question']}\nAnswer:"
+
+        results = []
+
+        if is_main_process():
+            print(f"\n[ModelManager] Running inference on {len(samples)} samples, {num_trials} trials each...")
+
+            self.raw_model.eval()
+
+            # Prepare all prompts (sample x trials)
+            all_prompts = []
+            prompt_indices = []  # (sample_idx, trial_idx)
+            for idx, sample in enumerate(samples):
+                prompt = prompt_formatter(sample)
+                for trial in range(num_trials):
+                    all_prompts.append(prompt)
+                    prompt_indices.append((idx, trial))
+
+            # Initialize response storage
+            sample_responses = [[] for _ in samples]
+
+            # Process in batches
+            with torch.no_grad():
+                for batch_start in tqdm(range(0, len(all_prompts), batch_size), desc="Inference"):
+                    batch_prompts = all_prompts[batch_start:batch_start + batch_size]
+                    batch_indices = prompt_indices[batch_start:batch_start + batch_size]
+
+                    # Tokenize
+                    inputs = self.tokenizer(
+                        batch_prompts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=512,
+                    ).to(self.raw_model.device)
+
+                    # Generate
+                    outputs = self.raw_model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature if temperature > 0 else None,
+                        do_sample=temperature > 0,
+                        pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                    )
+
+                    # Decode and store responses
+                    for i, (sample_idx, trial_idx) in enumerate(batch_indices):
+                        # Get only the generated part
+                        input_len = inputs.input_ids[i].shape[0]
+                        generated_ids = outputs[i][input_len:]
+                        response = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                        sample_responses[sample_idx].append(response)
+
+            # Build result samples
+            for idx, sample in enumerate(samples):
+                result_sample = sample.copy()
+                result_sample['responses'] = sample_responses[idx]
+                results.append(result_sample)
+
+            print(f"[ModelManager] Inference complete, generated {len(all_prompts)} responses")
+
+        # Broadcast results to all processes
+        if dist.is_initialized():
+            # Serialize results on main process
+            if is_main_process():
+                results_json = json.dumps(results)
+            else:
+                results_json = None
+
+            # Broadcast length first
+            if is_main_process():
+                length_tensor = torch.tensor([len(results_json)], dtype=torch.long, device=f"cuda:{self.local_rank}")
+            else:
+                length_tensor = torch.tensor([0], dtype=torch.long, device=f"cuda:{self.local_rank}")
+            dist.broadcast(length_tensor, src=0)
+
+            # Broadcast data
+            if is_main_process():
+                data_tensor = torch.tensor(
+                    [ord(c) for c in results_json],
+                    dtype=torch.uint8,
+                    device=f"cuda:{self.local_rank}"
+                )
+            else:
+                data_tensor = torch.zeros(
+                    length_tensor.item(),
+                    dtype=torch.uint8,
+                    device=f"cuda:{self.local_rank}"
+                )
+            dist.broadcast(data_tensor, src=0)
+
+            # Deserialize on other processes
+            if not is_main_process():
+                results_json = ''.join([chr(c) for c in data_tensor.cpu().tolist()])
+                results = json.loads(results_json)
+
+            dist.barrier()
+
+        return results
 
 
 # ============== Evaluation Functions ==============
@@ -425,6 +682,8 @@ def evaluate_judgment_with_model(
     }
 
 
+# ============== Utility Functions ==============
+
 def generate_experiment_name(model: str, dataset: str, train_samples: int, test_samples: int) -> str:
     """Generate experiment name from parameters (deterministic, no timestamp)."""
     model_short = model.split("/")[-1].replace("-Instruct", "")
@@ -446,7 +705,7 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
         "knowledge_epochs": args.knowledge_epochs,
         "inference_batch_size": args.inference_batch_size,
         "learning_rate": args.lr,
-        "training_mode": "full_fine_tuning",  # Always full fine-tuning, no LoRA
+        "training_mode": "full_fine_tuning",
         "adaptive": args.adaptive,
         "max_steps_per_sample": args.max_steps_per_sample,
         "ddp": args.ddp,
@@ -461,9 +720,7 @@ def save_config_log(output_dir: Path, args, experiment_name: str):
     return config
 
 
-# ============== Step completion checkers ==============
-
-def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline, args) -> bool:
+def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline) -> bool:
     """Check if a specific step within a phase has been completed."""
     if phase == 1:
         phase_output = pipeline.get_phase_output_dir("phase1_judgment")
@@ -493,44 +750,43 @@ def is_step_completed(phase: int, step: str, pipeline: MultiPhasePipeline, args)
     return False
 
 
-def is_phase_completed(phase: int, pipeline: MultiPhasePipeline, args) -> bool:
+def is_phase_completed(phase: int, pipeline: MultiPhasePipeline) -> bool:
     """Check if a phase has been fully completed."""
     if phase == 1:
-        return is_step_completed(1, "1.3_train", pipeline, args)
+        return is_step_completed(1, "1.3_train", pipeline)
     elif phase == 2:
-        return is_step_completed(2, "2.2_train", pipeline, args)
+        return is_step_completed(2, "2.2_train", pipeline)
     elif phase == 3:
-        return is_step_completed(3, "3.3_train", pipeline, args)
+        return is_step_completed(3, "3.3_train", pipeline)
     return False
 
 
-# ============== Phase 1: Initial Judgment Training ==============
+# ============== Phase 1: Data Preparation (Inference) ==============
 
-def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
-    """Run Phase 1: Initial judgment training."""
-    if is_main_process():
-        print("\n" + "=" * 60)
-        print("Phase 1: Initial Judgment Training (DDP)")
-        print("=" * 60)
+def run_phase1_data_prep(args, pipeline: MultiPhasePipeline) -> tuple:
+    """
+    Phase 1 data preparation: collect responses and build training data.
 
+    Uses create_inference for multi-GPU inference (separate from training model).
+    Only runs on rank 0, other ranks wait at barrier.
+
+    Returns:
+        (samples, training_data) tuple
+    """
     project_root = Path(__file__).resolve().parent.parent
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
 
     # Step 1.1: Collect responses
-    # NOTE: Inference runs ONLY on rank 0 to avoid multi-GPU conflicts in DDP mode
     responses_path = phase_output / "responses.jsonl"
-    if not args.force and is_step_completed(1, "1.1_responses", pipeline, args):
+    if not args.force and is_step_completed(1, "1.1_responses", pipeline):
         if is_main_process():
             print(f"\n[Step 1.1] Responses already collected, loading from {responses_path}")
-        # All processes load from file after barrier
     else:
         if is_main_process():
             print(f"\n[Step 1.1] Collecting responses from train split...")
 
-            # Load questions
             raw_samples = load_triviaqa(split="train", num_samples=args.num_samples)
 
-            # Use multi-GPU inference for response collection (only rank 0)
             inference = create_inference(
                 model_name=args.model,
                 inference_batch_size=args.inference_batch_size,
@@ -544,7 +800,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
                 prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
             )
 
-            # Evaluate and classify
             for sample in samples:
                 gold_answers = sample.get("normalized_answers", sample.get("answers", []))
                 evaluation = evaluate_responses(sample["responses"], gold_answers)
@@ -556,20 +811,19 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
             del inference
             torch.cuda.empty_cache()
 
-            # Save responses
             save_to_jsonl(samples, str(responses_path))
             print(f"Saved {len(samples)} samples to {responses_path}")
 
-    # Synchronize: wait for rank 0 to finish inference
+    # Synchronize
     if dist.is_initialized():
         dist.barrier()
 
-    # All processes load the saved responses
+    # All processes load
     samples = load_from_jsonl(str(responses_path))
 
     # Step 1.2: Build training data
     training_data_path = phase_output / "training_data.jsonl"
-    if not args.force and is_step_completed(1, "1.2_training_data", pipeline, args):
+    if not args.force and is_step_completed(1, "1.2_training_data", pipeline):
         if is_main_process():
             print(f"\n[Step 1.2] Training data already built, loading from {training_data_path}")
         training_data = load_from_jsonl(str(training_data_path))
@@ -584,14 +838,22 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 1.3: Baseline evaluation BEFORE training (GPU is free now)
+    return samples, training_data
+
+
+def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
+    """
+    Phase 1 baseline evaluation (before training).
+
+    Uses subprocess for evaluation to avoid GPU memory conflicts.
+    """
     eval_results = {}
+
     if is_main_process():
         print("\n" + "=" * 60)
         print("Phase 1 Baseline Evaluation (Before Training)")
         print("=" * 60)
 
-        # Baseline evaluation uses subprocess (separate process, no memory conflict)
         print("\n[Step 1.3a] Baseline JUDGMENT evaluation (train split)...")
         eval_results['before_train'] = run_judgment_evaluation(
             args.model, "none", "train", args.num_samples,
@@ -604,7 +866,6 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
-        # Baseline QA
         print("\n[Step 1.3c] Baseline QA accuracy...")
         val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
         qa_before = test_qa_accuracy(
@@ -617,87 +878,81 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 1.4: Train judgment (DDP)
-    adapter_path = phase_output / "judgment_v1"
-    model = None
-    tokenizer = None
-    raw_model = None
+    return eval_results
 
-    if not args.force and is_step_completed(1, "1.3_train", pipeline, args):
+
+def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, training_data: list):
+    """
+    Phase 1 training: train judgment ability.
+
+    Uses model from ModelManager, updates raw_model reference after training.
+    """
+    phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+    adapter_path = phase_output / "judgment_v1"
+
+    if not args.force and is_step_completed(1, "1.3_train", pipeline):
         if is_main_process():
             print(f"\n[Step 1.4] Judgment model already trained at {adapter_path}")
-            # Load trained model for evaluation
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            print("Loading trained model for evaluation...")
-            raw_model = AutoModelForCausalLM.from_pretrained(
-                str(adapter_path),
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-            tokenizer = AutoTokenizer.from_pretrained(str(adapter_path), trust_remote_code=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-    else:
-        if is_main_process():
-            print(f"\n[Step 1.4] Training judgment ability with DDP (full fine-tuning)...")
+        return
 
-        model, tokenizer = setup_model_for_training(
-            args.model,
-            use_lora=False,  # Always use full fine-tuning
-            ddp=args.ddp,
-            local_rank=local_rank,
+    if is_main_process():
+        print(f"\n[Step 1.4] Training judgment ability with DDP (full fine-tuning)...")
+
+    if args.adaptive:
+        from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+
+        trainer = DDPAdaptiveJudgmentTrainer(
+            model=model_mgr.model,
+            tokenizer=model_mgr.tokenizer,
+            learning_rate=args.lr,
+            local_rank=model_mgr.local_rank,
         )
 
-        if args.adaptive:
-            from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+        stats = trainer.train_dataset(
+            training_data,
+            system_prompt=SYSTEM_PROMPT,
+            num_epochs=args.epochs,
+            skip_correct=True,
+        )
 
-            trainer = DDPAdaptiveJudgmentTrainer(
-                model=model,
-                tokenizer=tokenizer,
-                learning_rate=args.lr,
-                local_rank=local_rank,
-            )
+        # Update raw_model reference
+        model_mgr.update_raw_model(trainer.raw_model)
 
-            stats = trainer.train_dataset(
-                training_data,
-                system_prompt=SYSTEM_PROMPT,
-                num_epochs=args.epochs,
-                skip_correct=True,
-            )
+        if is_main_process():
+            print(f"Training stats: {stats['per_epoch'][-1]}")
 
-            # Keep raw_model for evaluation
-            raw_model = trainer.raw_model
-
-            if is_main_process():
-                raw_model.save_pretrained(str(adapter_path))
-                tokenizer.save_pretrained(str(adapter_path))
-                print(f"Saved judgment model to {adapter_path}")
-                print(f"Final stats: {stats['per_epoch'][-1]}")
+    # Save model
+    model_mgr.save(adapter_path)
 
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 1.5: Evaluate AFTER training using pre-loaded model
-    if is_main_process() and raw_model is not None:
+
+def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
+    """
+    Phase 1 evaluation after training.
+
+    Uses pre-loaded model from ModelManager.
+    """
+    eval_results = {}
+
+    if is_main_process() and model_mgr.raw_model is not None:
         print("\n" + "=" * 60)
-        print("Phase 1 After-Training Evaluation (Using Pre-loaded Model)")
+        print("Phase 1 After-Training Evaluation")
         print("=" * 60)
 
-        # Load test samples
-        train_test_samples = samples[:args.num_samples]  # Use training samples
+        train_test_samples = samples[:args.num_samples]
         val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
 
-        # After training evaluation using pre-loaded model
         print("\n[Step 1.5a] After training JUDGMENT evaluation (train split)...")
         eval_results['after_train'] = evaluate_judgment_with_model(
-            raw_model, tokenizer, train_test_samples,
+            model_mgr.raw_model, model_mgr.tokenizer, train_test_samples,
             args.num_trials, args.inference_batch_size
         )
 
         print("\n[Step 1.5b] After training JUDGMENT evaluation (validation split)...")
         eval_results['after_val'] = evaluate_judgment_with_model(
-            raw_model, tokenizer, val_test_samples,
+            model_mgr.raw_model, model_mgr.tokenizer, val_test_samples,
             args.num_trials, args.inference_batch_size
         )
 
@@ -705,85 +960,26 @@ def run_phase1(args, pipeline: MultiPhasePipeline, local_rank: int):
         print("\n" + "=" * 60)
         print("Phase 1 Evaluation Summary")
         print("=" * 60)
-        before_train_acc = eval_results.get('before_train', {}).get('exact_match_rate', 0)
-        before_val_acc = eval_results.get('before_val', {}).get('exact_match_rate', 0)
         after_train_acc = eval_results.get('after_train', {}).get('exact_match_rate', 0)
         after_val_acc = eval_results.get('after_val', {}).get('exact_match_rate', 0)
-        print(f"  JUDGMENT Accuracy:")
-        print(f"    Before: Train={before_train_acc:.1f}%, Val={before_val_acc:.1f}%")
-        print(f"    After:  Train={after_train_acc:.1f}%, Val={after_val_acc:.1f}%")
-        print(f"    Improvement: Train={after_train_acc - before_train_acc:+.1f}%, Val={after_val_acc - before_val_acc:+.1f}%")
-
-    # Clean up model after evaluation
-    if model is not None:
-        del model
-    if raw_model is not None:
-        del raw_model
-    if tokenizer is not None:
-        del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    time.sleep(1.0)
-    if is_main_process():
-        print("Cleaned up Phase 1 models from GPU memory")
+        print(f"  After Training: Train={after_train_acc:.1f}%, Val={after_val_acc:.1f}%")
 
     if dist.is_initialized():
         dist.barrier()
 
-    # Record phase result (full fine-tuning: model saved directly to judgment_v1)
-    if is_main_process():
-        pipeline.record_phase_result(
-            phase_name="phase1_judgment",
-            status="completed",
-            metrics=eval_results,
-            output_paths={
-                "responses": str(responses_path),
-                "training_data": str(training_data_path),
-                "judgment_v1": str(adapter_path),
-            }
-        )
-        pipeline.state.current_phase = 1
-        pipeline._save_state()
-        print("\nPhase 1 completed!")
+    return eval_results
 
 
 # ============== Phase 2: Knowledge Learning ==============
 
-def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
-    """Run Phase 2: Knowledge learning on top of Phase 1's judgment model."""
-    if is_main_process():
-        print("\n" + "=" * 60)
-        print("Phase 2: Knowledge Learning (DDP)")
-        print("=" * 60)
+def run_phase2_data_prep(args, pipeline: MultiPhasePipeline, samples: list) -> list:
+    """
+    Phase 2 data preparation: build QA dataset.
+    """
+    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
 
-    project_root = Path(__file__).resolve().parent.parent
-    phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
-    phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
-
-    # Determine base model for Phase 2: Use Phase 1's trained model (full fine-tuning)
-    phase1_model_path = phase1_output / "judgment_v1"
-    if phase1_model_path.exists():
-        phase2_base_model = str(phase1_model_path)
-        if is_main_process():
-            print(f"Using Phase 1 trained model: {phase2_base_model}")
-    else:
-        # Fallback to original base model if Phase 1 output not found
-        phase2_base_model = args.model
-        if is_main_process():
-            print(f"Warning: Phase 1 model not found at {phase1_model_path}")
-            print(f"Falling back to original base model: {phase2_base_model}")
-
-    # Load Phase 1 responses
-    input_path = phase1_output / "responses.jsonl"
-    if not input_path.exists():
-        input_path = project_root / "data/step1_responses.jsonl"
-    samples = load_from_jsonl(str(input_path))
-
-    # Step 2.1: Build QA dataset
-    qa_data_path = phase2_output / "qa_training_data.jsonl"
-    if not args.force and is_step_completed(2, "2.1_qa_data", pipeline, args):
+    qa_data_path = phase_output / "qa_training_data.jsonl"
+    if not args.force and is_step_completed(2, "2.1_qa_data", pipeline):
         if is_main_process():
             print(f"\n[Step 2.1] QA data already built, loading from {qa_data_path}")
         qa_data = load_from_jsonl(str(qa_data_path))
@@ -798,8 +994,13 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.2: Baseline evaluation BEFORE training (GPU is free now)
+    return qa_data
+
+
+def run_phase2_baseline_eval(args, model_path: str, samples: list) -> dict:
+    """Phase 2 baseline evaluation (QA accuracy before training)."""
     eval_results = {}
+
     if is_main_process():
         print("\n" + "=" * 60)
         print("Phase 2 Baseline Evaluation (Before Training)")
@@ -810,14 +1011,14 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
 
         print("\n[Step 2.2a] Baseline QA accuracy (train split)...")
         before_train = test_qa_accuracy(
-            phase2_base_model, train_test_samples, args.num_trials,
+            model_path, train_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
 
         print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
         before_val = test_qa_accuracy(
-            phase2_base_model, val_test_samples, args.num_trials,
+            model_path, val_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus
         )
         print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
@@ -828,246 +1029,208 @@ def run_phase2(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.3: Train knowledge model (DDP)
-    adapter_path = phase2_output / "knowledge"
-    model = None
-    tokenizer = None
-    raw_model = None
+    return eval_results
 
-    if not args.force and is_step_completed(2, "2.2_train", pipeline, args):
+
+def run_phase2_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, qa_data: list):
+    """
+    Phase 2 training: knowledge learning.
+    """
+    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+    adapter_path = phase_output / "knowledge"
+
+    if not args.force and is_step_completed(2, "2.2_train", pipeline):
         if is_main_process():
             print(f"\n[Step 2.3] Knowledge model already trained at {adapter_path}")
-            # Load trained model for evaluation
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            print("Loading trained model for evaluation...")
-            raw_model = AutoModelForCausalLM.from_pretrained(
-                str(adapter_path),
-                torch_dtype=torch.float16,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-            tokenizer = AutoTokenizer.from_pretrained(str(adapter_path), trust_remote_code=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-    else:
-        if is_main_process():
-            print(f"\n[Step 2.3] Training knowledge model with DDP (full fine-tuning)...")
-            print(f"  Base model: {phase2_base_model}")
+        return
 
-        model, tokenizer = setup_model_for_training(
-            phase2_base_model,
-            use_lora=False,  # Always use full fine-tuning
-            ddp=args.ddp,
-            local_rank=local_rank,
+    if is_main_process():
+        print(f"\n[Step 2.3] Training knowledge model with DDP (full fine-tuning)...")
+
+    # Prepare adaptive samples
+    adaptive_samples = []
+    for sample in qa_data:
+        question = sample["messages"][1]["content"]
+        answer = sample["messages"][2]["content"]
+        adaptive_samples.append({
+            "messages": sample["messages"],
+            "question": question,
+            "answers": [answer],
+            "normalized_answers": [answer],
+        })
+
+    if args.adaptive:
+        from src.ddp_adaptive_trainer import DDPAdaptiveKnowledgeTrainer
+
+        trainer = DDPAdaptiveKnowledgeTrainer(
+            model=model_mgr.model,
+            tokenizer=model_mgr.tokenizer,
+            learning_rate=args.lr,
+            local_rank=model_mgr.local_rank,
         )
 
-        # Prepare adaptive samples
-        adaptive_samples = []
-        for sample in qa_data:
-            question = sample["messages"][1]["content"]
-            answer = sample["messages"][2]["content"]
-            adaptive_samples.append({
-                "messages": sample["messages"],
-                "question": question,
-                "answers": [answer],
-                "normalized_answers": [answer],
-                "original_ability": sample.get("original_ability", ""),
-            })
+        stats = trainer.train_dataset(
+            adaptive_samples,
+            num_epochs=args.knowledge_epochs,
+            skip_correct=True,
+        )
 
-        if args.adaptive:
-            from src.ddp_adaptive_trainer import DDPAdaptiveKnowledgeTrainer
+        # Update raw_model reference
+        model_mgr.update_raw_model(trainer.raw_model)
 
-            trainer = DDPAdaptiveKnowledgeTrainer(
-                model=model,
-                tokenizer=tokenizer,
-                learning_rate=args.lr,
-                local_rank=local_rank,
-            )
+        if is_main_process():
+            print(f"Training stats: {stats['per_epoch'][-1]}")
 
-            stats = trainer.train_dataset(
-                adaptive_samples,
-                num_epochs=args.knowledge_epochs,
-                filter_by_ability=["cannot", "uncertain"],
-                skip_correct=True,
-            )
-
-            # Keep raw_model for evaluation
-            raw_model = trainer.raw_model
-
-            if is_main_process():
-                raw_model.save_pretrained(str(adapter_path))
-                tokenizer.save_pretrained(str(adapter_path))
-                print(f"Saved knowledge model to {adapter_path}")
-                print(f"Final stats: {stats['per_epoch'][-1]}")
+    # Save model
+    model_mgr.save(adapter_path)
 
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 2.4: Test knowledge acquisition using pre-loaded model (full fine-tuning, no merge needed)
-    if is_main_process() and raw_model is not None:
+
+def run_phase2_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
+    """Phase 2 evaluation after training."""
+    eval_results = {}
+
+    if is_main_process() and model_mgr.raw_model is not None:
         print("\n" + "=" * 60)
-        print("Phase 2 After-Training Evaluation (Using Pre-loaded Model)")
+        print("Phase 2 After-Training Evaluation")
         print("=" * 60)
 
         train_test_samples = samples[:args.test_samples]
         val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
 
-        # Test on TRAIN split
         print("\n[Step 2.4a] After training QA accuracy (train split)...")
         after_train = test_qa_accuracy(
-            str(adapter_path),
+            str(model_mgr.current_path),
             train_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus,
-            model=raw_model, tokenizer=tokenizer
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {after_train['qa_accuracy']:.1f}%")
-        train_improvement = after_train['qa_accuracy'] - eval_results.get('train_before_accuracy', 0)
-        print(f"  Improvement: {train_improvement:+.1f}%")
+        eval_results['train_after_accuracy'] = after_train['qa_accuracy']
 
-        # Test on VALIDATION split
         print("\n[Step 2.4b] After training QA accuracy (validation split)...")
         after_val = test_qa_accuracy(
-            str(adapter_path),
+            str(model_mgr.current_path),
             val_test_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus,
-            model=raw_model, tokenizer=tokenizer
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {after_val['qa_accuracy']:.1f}%")
-        val_improvement = after_val['qa_accuracy'] - eval_results.get('val_before_accuracy', 0)
-        print(f"  Improvement: {val_improvement:+.1f}%")
+        eval_results['val_after_accuracy'] = after_val['qa_accuracy']
 
-        # Summary
-        print("\n" + "=" * 60)
-        print("Phase 2 Evaluation Summary")
-        print("=" * 60)
-        print(f"  QA Accuracy:")
-        print(f"    Before: Train={eval_results.get('train_before_accuracy', 0):.1f}%, Val={eval_results.get('val_before_accuracy', 0):.1f}%")
-        print(f"    After:  Train={after_train['qa_accuracy']:.1f}%, Val={after_val['qa_accuracy']:.1f}%")
-        print(f"    Improvement: Train={train_improvement:+.1f}%, Val={val_improvement:+.1f}%")
+    if dist.is_initialized():
+        dist.barrier()
 
-        eval_results.update({
-            "train_after_accuracy": after_train['qa_accuracy'],
-            "train_improvement": train_improvement,
-            "val_after_accuracy": after_val['qa_accuracy'],
-            "val_improvement": val_improvement,
-        })
-
-    # Clean up model after evaluation
-    if model is not None:
-        del model
-    if raw_model is not None:
-        del raw_model
-    if tokenizer is not None:
-        del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    time.sleep(1.0)
-    if is_main_process():
-        print("Cleaned up Phase 2 models from GPU memory")
-
-    # Record phase result (full fine-tuning: model saved directly to knowledge/)
-    if is_main_process():
-        pipeline.record_phase_result(
-            phase_name="phase2_knowledge",
-            status="completed",
-            metrics=eval_results,
-            output_paths={
-                "qa_data": str(qa_data_path),
-                "knowledge": str(adapter_path),
-            }
-        )
-        pipeline.state.current_phase = 2
-        pipeline._save_state()
-        print("\nPhase 2 completed!")
+    return eval_results
 
 
 # ============== Phase 3: Update Judgment ==============
 
-def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
-    """Run Phase 3: Update judgment with knowledge."""
-    if is_main_process():
-        print("\n" + "=" * 60)
-        print("Phase 3: Update Judgment with Knowledge (DDP)")
-        print("=" * 60)
+def run_phase3_data_prep(
+    args,
+    pipeline: MultiPhasePipeline,
+    knowledge_model_path: str,
+    original_samples: list,
+    model_mgr: ModelManager = None,
+) -> tuple:
+    """
+    Phase 3 data preparation: re-collect responses with knowledge model.
 
+    If model_mgr is provided and has the knowledge model loaded, uses it directly
+    for inference. Otherwise falls back to create_inference (requires cleanup first).
+    """
     project_root = Path(__file__).resolve().parent.parent
     phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
-    phase2_output = pipeline.get_phase_output_dir("phase2_knowledge")
     phase3_output = pipeline.get_phase_output_dir("phase3_judgment")
 
-    # Get knowledge model path (full fine-tuning: model saved directly to knowledge/)
-    base_model = str(phase2_output / "knowledge")
-
-    if not Path(base_model).exists():
-        if is_main_process():
-            print(f"Warning: Knowledge model not found at {base_model}, using original")
-        base_model = args.model
-    else:
-        if is_main_process():
-            print(f"Using Phase 2 knowledge model: {base_model}")
-
-    # Load Phase 1 responses for questions
-    input_path = phase1_output / "responses.jsonl"
-    if not input_path.exists():
-        input_path = project_root / "data/step1_responses.jsonl"
-    original_samples = load_from_jsonl(str(input_path))[:args.num_samples]
-
-    # Step 3.1: Re-collect responses with knowledge model
-    # NOTE: Inference runs ONLY on rank 0 to avoid multi-GPU conflicts in DDP mode
+    # Step 3.1: Re-collect responses
     responses_path = phase3_output / "responses_post_knowledge.jsonl"
-    if not args.force and is_step_completed(3, "3.1_responses", pipeline, args):
+    if not args.force and is_step_completed(3, "3.1_responses", pipeline):
         if is_main_process():
             print(f"\n[Step 3.1] Responses already collected, loading from {responses_path}")
-        # All processes load from file after barrier
     else:
         if is_main_process():
             print(f"\n[Step 3.1] Re-collecting responses with knowledge model...")
 
-            inference = create_inference(
-                model_name=base_model,
-                inference_batch_size=args.inference_batch_size,
-                temperature=1.0,
-                num_gpus=args.num_gpus,
-            )
+        # Use model_mgr if available (avoids reload)
+        if model_mgr is not None and model_mgr.is_loaded():
+            if is_main_process():
+                print(f"Using already-loaded model from ModelManager")
 
-            new_samples = inference.batch_inference(
+            new_samples = model_mgr.batch_inference(
                 samples=original_samples,
                 num_trials=args.num_trials,
                 prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
+                batch_size=args.inference_batch_size,
+                temperature=1.0,
             )
 
+            # Evaluate responses (all processes have the results now)
             for sample in new_samples:
                 gold_answers = sample.get("normalized_answers", sample.get("answers", []))
                 evaluation = evaluate_responses(sample["responses"], gold_answers)
                 sample["evaluation"] = evaluation
                 sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
 
-            if hasattr(inference, 'shutdown'):
-                inference.shutdown()
-            del inference
-            torch.cuda.empty_cache()
+            if is_main_process():
+                save_to_jsonl(new_samples, str(responses_path))
 
-            save_to_jsonl(new_samples, str(responses_path))
+                # Show distribution change
+                new_dist = {}
+                for s in new_samples:
+                    ability = s.get("ability", "unknown")
+                    new_dist[ability] = new_dist.get(ability, 0) + 1
+                print(f"New ability distribution: {new_dist}")
+        else:
+            # Fallback: use create_inference (requires model_mgr.cleanup() before calling)
+            if is_main_process():
+                print(f"Using create_inference (model not pre-loaded)")
 
-            # Show distribution change
-            new_dist = {}
-            for s in new_samples:
-                ability = s.get("ability", "unknown")
-                new_dist[ability] = new_dist.get(ability, 0) + 1
-            print(f"New ability distribution: {new_dist}")
+                inference = create_inference(
+                    model_name=knowledge_model_path,
+                    inference_batch_size=args.inference_batch_size,
+                    temperature=1.0,
+                    num_gpus=args.num_gpus,
+                )
 
-    # Synchronize: wait for rank 0 to finish inference
+                new_samples = inference.batch_inference(
+                    samples=original_samples,
+                    num_trials=args.num_trials,
+                    prompt_formatter=lambda s: f"Question: {s['question']}\nAnswer:",
+                )
+
+                for sample in new_samples:
+                    gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+                    evaluation = evaluate_responses(sample["responses"], gold_answers)
+                    sample["evaluation"] = evaluation
+                    sample["ability"] = classify_ability(evaluation["correct_count"], evaluation["total"])
+
+                if hasattr(inference, 'shutdown'):
+                    inference.shutdown()
+                del inference
+                torch.cuda.empty_cache()
+
+                save_to_jsonl(new_samples, str(responses_path))
+
+                # Show distribution change
+                new_dist = {}
+                for s in new_samples:
+                    ability = s.get("ability", "unknown")
+                    new_dist[ability] = new_dist.get(ability, 0) + 1
+                print(f"New ability distribution: {new_dist}")
+
+    # Synchronize
     if dist.is_initialized():
         dist.barrier()
 
-    # All processes load the saved responses
+    # All processes load
     new_samples = load_from_jsonl(str(responses_path))
 
     # Step 3.2: Build new training data
     training_data_path = phase3_output / "training_data_v2.jsonl"
-    if not args.force and is_step_completed(3, "3.2_training_data", pipeline, args):
+    if not args.force and is_step_completed(3, "3.2_training_data", pipeline):
         if is_main_process():
             print(f"\n[Step 3.2] Training data already built, loading from {training_data_path}")
         training_data = load_from_jsonl(str(training_data_path))
@@ -1082,78 +1245,77 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 3.3: Train updated judgment (DDP)
-    adapter_path = phase3_output / "judgment_v2"
-    if not args.force and is_step_completed(3, "3.3_train", pipeline, args):
+    return new_samples, training_data
+
+
+def run_phase3_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, training_data: list):
+    """Phase 3 training: update judgment ability."""
+    phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+    adapter_path = phase_output / "judgment_v2"
+
+    if not args.force and is_step_completed(3, "3.3_train", pipeline):
         if is_main_process():
             print(f"\n[Step 3.3] Judgment v2 model already trained at {adapter_path}")
-    else:
-        if is_main_process():
-            print(f"\n[Step 3.3] Training judgment v2 with DDP (full fine-tuning)...")
-            print(f"  Base model: {base_model}")
+        return
 
-        model, tokenizer = setup_model_for_training(
-            base_model,
-            use_lora=False,  # Always use full fine-tuning
-            ddp=args.ddp,
-            local_rank=local_rank,
+    if is_main_process():
+        print(f"\n[Step 3.3] Training judgment v2 with DDP (full fine-tuning)...")
+
+    if args.adaptive:
+        from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+
+        trainer = DDPAdaptiveJudgmentTrainer(
+            model=model_mgr.model,
+            tokenizer=model_mgr.tokenizer,
+            learning_rate=args.lr,
+            local_rank=model_mgr.local_rank,
         )
 
-        if args.adaptive:
-            from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+        stats = trainer.train_dataset(
+            training_data,
+            system_prompt=SYSTEM_PROMPT,
+            num_epochs=args.epochs,
+            skip_correct=True,
+        )
 
-            trainer = DDPAdaptiveJudgmentTrainer(
-                model=model,
-                tokenizer=tokenizer,
-                learning_rate=args.lr,
-                local_rank=local_rank,
-            )
+        model_mgr.update_raw_model(trainer.raw_model)
 
-            stats = trainer.train_dataset(
-                training_data,
-                system_prompt=SYSTEM_PROMPT,
-                num_epochs=args.epochs,
-                skip_correct=True,
-            )
+        if is_main_process():
+            print(f"Training stats: {stats['per_epoch'][-1]}")
 
-            if is_main_process():
-                trainer.raw_model.save_pretrained(str(adapter_path))
-                tokenizer.save_pretrained(str(adapter_path))
-                print(f"Saved judgment v2 model to {adapter_path}")
-                print(f"Final stats: {stats['per_epoch'][-1]}")
-
-        del model
-        del tokenizer
-        torch.cuda.empty_cache()
+    # Save model
+    model_mgr.save(adapter_path)
 
     if dist.is_initialized():
         dist.barrier()
 
-    # Step 3.4: Final Evaluation (only on rank 0)
+
+def run_phase3_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, original_samples: list) -> dict:
+    """Phase 3 final evaluation."""
     eval_results = {}
+    phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+
     if is_main_process():
         print("\n" + "=" * 60)
-        print("Phase 3 Evaluation: Final Assessment")
+        print("Phase 3 Final Evaluation")
         print("=" * 60)
 
-        # Setup evaluation paths (full fine-tuning: use judgment_v2 directly)
-        eval_model = str(adapter_path)
-        eval_lora = "none"
+        eval_model = str(phase_output / "judgment_v2")
 
         # Judgment evaluation
         print("\n[Step 3.4a] Final JUDGMENT evaluation (train split)...")
         eval_results['judgment_train'] = run_judgment_evaluation(
-            eval_model, eval_lora, "train", args.num_samples,
+            eval_model, "none", "train", args.num_samples,
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
         print("\n[Step 3.4b] Final JUDGMENT evaluation (validation split)...")
         eval_results['judgment_val'] = run_judgment_evaluation(
-            eval_model, eval_lora, "validation", args.test_samples,
+            eval_model, "none", "validation", args.test_samples,
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
-        # QA evaluation (test if knowledge was preserved)
+        # QA evaluation
         print("\n[Step 3.4c] Final QA accuracy (train split)...")
         train_samples_for_qa = original_samples[:args.test_samples]
         qa_train = test_qa_accuracy(
@@ -1172,60 +1334,37 @@ def run_phase3(args, pipeline: MultiPhasePipeline, local_rank: int):
         eval_results['qa_val'] = qa_val
         print(f"  QA accuracy (val): {qa_val['qa_accuracy']:.1f}%")
 
-        # Compare with Phase 1 (before knowledge learning)
+        # Summary
         print("\n" + "=" * 60)
         print("Phase 3 Evaluation Summary")
         print("=" * 60)
-        judgment_train_acc = eval_results.get('judgment_train', {}).get('exact_match_rate', 0)
-        judgment_val_acc = eval_results.get('judgment_val', {}).get('exact_match_rate', 0)
-        print(f"  Final JUDGMENT Accuracy:")
-        print(f"    Train: {judgment_train_acc:.1f}%")
-        print(f"    Val:   {judgment_val_acc:.1f}%")
-        print(f"  Final QA Accuracy:")
-        print(f"    Train: {qa_train['qa_accuracy']:.1f}%")
-        print(f"    Val:   {qa_val['qa_accuracy']:.1f}%")
+        print(f"  JUDGMENT: Train={eval_results['judgment_train'].get('exact_match_rate', 0):.1f}%, "
+              f"Val={eval_results['judgment_val'].get('exact_match_rate', 0):.1f}%")
+        print(f"  QA: Train={qa_train['qa_accuracy']:.1f}%, Val={qa_val['qa_accuracy']:.1f}%")
 
-        # Show ability distribution change
-        print("\n  Ability Distribution (Post-Knowledge):")
-        ability_dist = {}
-        for s in new_samples:
-            ability = s.get("ability", "unknown")
-            ability_dist[ability] = ability_dist.get(ability, 0) + 1
-        for ability, count in sorted(ability_dist.items()):
-            pct = count / len(new_samples) * 100
-            print(f"    {ability}: {count} ({pct:.1f}%)")
+    if dist.is_initialized():
+        dist.barrier()
 
-    # Record phase result
-    if is_main_process():
-        pipeline.record_phase_result(
-            phase_name="phase3_judgment",
-            status="completed",
-            metrics=eval_results,
-            output_paths={
-                "responses": str(responses_path),
-                "training_data": str(training_data_path),
-                "judgment_v2": str(adapter_path),
-            }
-        )
-        pipeline.state.current_phase = 3
-        pipeline._save_state()
-        print("\nPhase 3 completed!")
+    return eval_results
 
+
+# ============== Main Entry Point ==============
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Multi-phase Pipeline with DDP")
+    parser = argparse.ArgumentParser(description="Multi-phase metacognition training with DDP")
 
-    # Experiment
-    parser.add_argument("--experiment", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="./experiments")
-
-    # Model and dataset
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
+    # Model params
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--output_dir", type=str, default="experiments")
     parser.add_argument("--dataset", type=str, default="triviaqa")
+    parser.add_argument("--experiment", type=str, default=None,
+                        help="Experiment name (auto-generated if not provided)")
 
-    # Phase selection
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=None)
-    parser.add_argument("--resume", action="store_true")
+    # Phase control
+    parser.add_argument("--phase", type=int, default=None,
+                        help="Run specific phase only (1, 2, or 3)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from last completed phase")
     parser.add_argument("--force", action="store_true",
                         help="Force re-run even if step already completed")
 
@@ -1235,11 +1374,11 @@ def main():
     parser.add_argument("--num_trials", type=int, default=5)
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
-    # Training params (always full fine-tuning, no LoRA)
+    # Training params
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--knowledge_epochs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for full fine-tuning")
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--adaptive", action="store_true", default=True)
     parser.add_argument("--max_steps_per_sample", type=int, default=10)
 
@@ -1271,13 +1410,12 @@ def main():
     else:
         experiment_name = args.experiment
 
-    # Create experiment directory (main process only)
+    # Create experiment directory
     experiment_dir = output_base / experiment_name
     if is_main_process():
         experiment_dir.mkdir(parents=True, exist_ok=True)
         save_config_log(experiment_dir, args, experiment_name)
 
-    # Synchronize
     if dist.is_initialized():
         dist.barrier()
 
@@ -1291,7 +1429,7 @@ def main():
 
     if is_main_process():
         print("=" * 60)
-        print(f"Multi-phase Pipeline (DDP)")
+        print(f"Multi-phase Pipeline (DDP) - Unified Model Management")
         print("=" * 60)
         print(f"Experiment: {experiment_name}")
         print(f"Model: {args.model}")
@@ -1324,10 +1462,20 @@ def main():
         if args.force:
             print("Force mode: will re-run all steps")
 
-    # Execute phases
+    # ============== Unified Model Management ==============
+    # Create ModelManager but don't load yet
+    model_mgr = ModelManager(args.ddp, local_rank)
+
+    # Determine starting model path based on first phase
+    phase1_model_path = pipeline.get_phase_output_dir("phase1_judgment") / "judgment_v1"
+    phase2_model_path = pipeline.get_phase_output_dir("phase2_knowledge") / "knowledge"
+
+    # Track samples across phases
+    samples = None
+
     for phase in phases_to_run:
-        # Check if phase completed (unless --force)
-        if not args.force and is_phase_completed(phase, pipeline, args):
+        # Check if phase completed
+        if not args.force and is_phase_completed(phase, pipeline):
             if is_main_process():
                 print(f"\n{'=' * 60}")
                 print(f"Phase {phase} already completed, skipping...")
@@ -1336,15 +1484,149 @@ def main():
             continue
 
         if phase == 1:
-            run_phase1(args, pipeline, local_rank)
+            if is_main_process():
+                print("\n" + "=" * 60)
+                print("Phase 1: Initial Judgment Training")
+                print("=" * 60)
+
+            # Data prep (uses create_inference, separate from training model)
+            samples, training_data = run_phase1_data_prep(args, pipeline)
+
+            # Baseline eval (uses subprocess)
+            baseline_eval = run_phase1_baseline_eval(args, pipeline)
+
+            # Load model for training
+            model_mgr.load(args.model)
+
+            # Training
+            run_phase1_training(args, pipeline, model_mgr, training_data)
+
+            # Evaluation (uses pre-loaded model)
+            after_eval = run_phase1_evaluation(args, pipeline, model_mgr, samples)
+
+            # Record phase result
+            if is_main_process():
+                pipeline.record_phase_result(
+                    phase_name="phase1_judgment",
+                    status="completed",
+                    metrics={**baseline_eval, **after_eval},
+                    output_paths={
+                        "responses": str(pipeline.get_phase_output_dir("phase1_judgment") / "responses.jsonl"),
+                        "training_data": str(pipeline.get_phase_output_dir("phase1_judgment") / "training_data.jsonl"),
+                        "judgment_v1": str(phase1_model_path),
+                    }
+                )
+                pipeline.state.current_phase = 1
+                pipeline._save_state()
+                print("\nPhase 1 completed!")
+
         elif phase == 2:
-            run_phase2(args, pipeline, local_rank)
+            if is_main_process():
+                print("\n" + "=" * 60)
+                print("Phase 2: Knowledge Learning")
+                print("=" * 60)
+
+            # Load samples if not already loaded
+            if samples is None:
+                responses_path = pipeline.get_phase_output_dir("phase1_judgment") / "responses.jsonl"
+                samples = load_from_jsonl(str(responses_path))
+
+            # Data prep
+            qa_data = run_phase2_data_prep(args, pipeline, samples)
+
+            # Determine model to load: use Phase 1 output if available
+            if phase1_model_path.exists():
+                phase2_base_model = str(phase1_model_path)
+            else:
+                phase2_base_model = args.model
+
+            # Baseline eval (uses subprocess, model not loaded yet)
+            baseline_eval = run_phase2_baseline_eval(args, phase2_base_model, samples)
+
+            # Load model for training (or continue using if already loaded from same path)
+            if not model_mgr.is_loaded() or model_mgr.current_path != phase2_base_model:
+                model_mgr.load(phase2_base_model)
+
+            # Training
+            run_phase2_training(args, pipeline, model_mgr, qa_data)
+
+            # Evaluation
+            after_eval = run_phase2_evaluation(args, pipeline, model_mgr, samples)
+
+            # Record phase result
+            if is_main_process():
+                pipeline.record_phase_result(
+                    phase_name="phase2_knowledge",
+                    status="completed",
+                    metrics={**baseline_eval, **after_eval},
+                    output_paths={
+                        "qa_data": str(pipeline.get_phase_output_dir("phase2_knowledge") / "qa_training_data.jsonl"),
+                        "knowledge": str(phase2_model_path),
+                    }
+                )
+                pipeline.state.current_phase = 2
+                pipeline._save_state()
+                print("\nPhase 2 completed!")
+
         elif phase == 3:
-            run_phase3(args, pipeline, local_rank)
+            if is_main_process():
+                print("\n" + "=" * 60)
+                print("Phase 3: Update Judgment with Knowledge")
+                print("=" * 60)
+
+            # Load original samples if not available
+            if samples is None:
+                responses_path = pipeline.get_phase_output_dir("phase1_judgment") / "responses.jsonl"
+                samples = load_from_jsonl(str(responses_path))
+            original_samples = samples[:args.num_samples]
+
+            # Determine knowledge model path
+            if phase2_model_path.exists():
+                knowledge_model_path = str(phase2_model_path)
+            else:
+                knowledge_model_path = args.model
+                if is_main_process():
+                    print(f"Warning: Knowledge model not found, using original: {args.model}")
+
+            # Ensure knowledge model is loaded
+            # If continuing from Phase 2, model_mgr already has it loaded
+            # If running Phase 3 standalone, need to load it
+            if not model_mgr.is_loaded() or model_mgr.current_path != knowledge_model_path:
+                model_mgr.load(knowledge_model_path)
+
+            # Data prep - uses model_mgr for inference (no reload needed)
+            new_samples, training_data = run_phase3_data_prep(
+                args, pipeline, knowledge_model_path, original_samples, model_mgr=model_mgr
+            )
+
+            # Training
+            run_phase3_training(args, pipeline, model_mgr, training_data)
+
+            # Evaluation
+            eval_results = run_phase3_evaluation(args, pipeline, model_mgr, original_samples)
+
+            # Record phase result
+            if is_main_process():
+                pipeline.record_phase_result(
+                    phase_name="phase3_judgment",
+                    status="completed",
+                    metrics=eval_results,
+                    output_paths={
+                        "responses": str(pipeline.get_phase_output_dir("phase3_judgment") / "responses_post_knowledge.jsonl"),
+                        "training_data": str(pipeline.get_phase_output_dir("phase3_judgment") / "training_data_v2.jsonl"),
+                        "judgment_v2": str(pipeline.get_phase_output_dir("phase3_judgment") / "judgment_v2"),
+                    }
+                )
+                pipeline.state.current_phase = 3
+                pipeline._save_state()
+                print("\nPhase 3 completed!")
 
         # Synchronize between phases
         if dist.is_initialized():
             dist.barrier()
+
+    # Final cleanup
+    model_mgr.cleanup()
 
     # Final summary
     if is_main_process():
