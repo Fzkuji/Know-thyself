@@ -2,9 +2,12 @@
 
 ## Workflow Preferences
 
-1. **Auto-commit after code changes**: After completing code modifications, automatically commit and push to GitHub without asking for confirmation.
-   - Use descriptive commit messages
-   - Push to the current branch
+1. **IMPORTANT - Auto-commit after EVERY code change**:
+   - After completing ANY code modification, ALWAYS commit and push to GitHub immediately
+   - Do NOT ask for confirmation, just do it
+   - Use descriptive commit messages in English
+   - Push to the current branch (usually `main`)
+   - This applies to ALL code changes, no exceptions
 
 ## Project Structure
 
