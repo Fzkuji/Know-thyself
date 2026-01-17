@@ -891,6 +891,7 @@ def evaluate_judgment_with_model(
     samples: list,
     num_trials: int = 5,
     inference_batch_size: int = 16,
+    precomputed_abilities: dict = None,  # NEW: Use abilities from training
 ) -> dict:
     """
     Evaluate judgment accuracy using a pre-loaded model.
@@ -900,11 +901,15 @@ def evaluate_judgment_with_model(
         tokenizer: Pre-loaded tokenizer
         samples: List of samples to evaluate
         num_trials: Number of trials per question for actual ability
+        precomputed_abilities: Dict mapping sample_id/question -> ability from training.
+                              If provided, skips QA generation and uses these abilities.
 
     Returns:
         Dict with evaluation metrics
     """
-    print(f"Evaluating judgment on {len(samples)} samples using pre-loaded model...")
+    use_precomputed = precomputed_abilities is not None and len(precomputed_abilities) > 0
+    mode_str = "precomputed abilities" if use_precomputed else f"fresh QA ({num_trials} trials)"
+    print(f"Evaluating judgment on {len(samples)} samples using pre-loaded model ({mode_str})...")
 
     model.eval()
     tokenizer.padding_side = "left"
@@ -948,70 +953,96 @@ def evaluate_judgment_with_model(
             ).strip()
             predicted_abilities.append(parse_judgment_response(response))
 
-    # Step 2: Generate QA responses to determine actual abilities
-    print("Step 2: Generating QA responses...")
-    qa_prompts = []
-    for sample in samples:
-        messages = [
-            {"role": "system", "content": "Answer the question concisely and directly."},
-            {"role": "user", "content": sample['question']}
-        ]
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        qa_prompts.extend([prompt] * num_trials)
+    # Step 2: Determine actual abilities
+    if use_precomputed:
+        # Use precomputed abilities from training (consistent evaluation)
+        print("Step 2: Using precomputed abilities from training...")
+        actual_abilities = []
+        qa_correct_count = 0  # Not applicable when using precomputed
 
-    # Generate QA responses in batches
-    all_qa_responses = []
-    for i in range(0, len(qa_prompts), inference_batch_size):
-        batch_prompts = qa_prompts[i:i + inference_batch_size]
-        inputs = tokenizer(
-            batch_prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512,
-        ).to(model.device)
+        for sample in samples:
+            sample_id = sample.get("id", sample.get("question", ""))
+            # Try to find ability by id first, then by question
+            ability = precomputed_abilities.get(sample_id)
+            if ability is None:
+                ability = precomputed_abilities.get(sample.get("question", ""))
+            if ability is None:
+                # Fallback: mark as cannot if not found
+                ability = "cannot"
+                print(f"Warning: No precomputed ability for sample, defaulting to 'cannot'")
+            actual_abilities.append(ability)
 
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=64,
-                temperature=1.0,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
-            )
+            # For QA accuracy, estimate from ability (rough approximation)
+            if ability == "can":
+                qa_correct_count += 1
+            elif ability == "uncertain":
+                qa_correct_count += 0.5  # Partial credit
 
-        for output in outputs:
-            response = tokenizer.decode(
-                output[inputs["input_ids"].shape[1]:],
-                skip_special_tokens=True
-            ).strip()
-            all_qa_responses.append(response)
+        qa_correct_count = int(qa_correct_count)
+    else:
+        # Generate fresh QA responses
+        print("Step 2: Generating QA responses...")
+        qa_prompts = []
+        for sample in samples:
+            messages = [
+                {"role": "system", "content": "Answer the question concisely and directly."},
+                {"role": "user", "content": sample['question']}
+            ]
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            qa_prompts.extend([prompt] * num_trials)
+
+        # Generate QA responses in batches
+        all_qa_responses = []
+        for i in range(0, len(qa_prompts), inference_batch_size):
+            batch_prompts = qa_prompts[i:i + inference_batch_size]
+            inputs = tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(model.device)
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    temperature=1.0,
+                    do_sample=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+
+            for output in outputs:
+                response = tokenizer.decode(
+                    output[inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
+                all_qa_responses.append(response)
+
+        # Compute abilities from QA responses
+        actual_abilities = []
+        qa_correct_count = 0
+        for i, sample in enumerate(samples):
+            start_idx = i * num_trials
+            end_idx = start_idx + num_trials
+            responses = all_qa_responses[start_idx:end_idx]
+
+            gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+            correct_responses = sum(1 for r in responses if is_correct(r, gold_answers))
+            actual_ability = classify_ability(correct_responses, num_trials)
+            actual_abilities.append(actual_ability)
+
+            if correct_responses > 0:
+                qa_correct_count += 1
 
     # Step 3: Evaluate results
     print("Step 3: Evaluating results...")
     correct_count = 0
     pred_dist = {"can": 0, "uncertain": 0, "cannot": 0}
     actual_dist = {"can": 0, "uncertain": 0, "cannot": 0}
-    actual_abilities = []
-    qa_correct_count = 0
 
     for i, sample in enumerate(samples):
-        # Get QA responses for this sample
-        start_idx = i * num_trials
-        end_idx = start_idx + num_trials
-        responses = all_qa_responses[start_idx:end_idx]
-
-        # Determine actual ability
-        gold_answers = sample.get("normalized_answers", sample.get("answers", []))
-        correct_responses = sum(1 for r in responses if is_correct(r, gold_answers))
-        actual_ability = classify_ability(correct_responses, num_trials)
-        actual_abilities.append(actual_ability)
-
-        # Track QA accuracy (any correct response)
-        if correct_responses > 0:
-            qa_correct_count += 1
-
-        # Get predicted ability
+        actual_ability = actual_abilities[i]
         predicted_ability = predicted_abilities[i]
 
         # Update counts
