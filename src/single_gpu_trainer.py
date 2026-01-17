@@ -205,6 +205,11 @@ class SingleGPUKnowledgeTrainer:
 class SingleGPUJudgmentTrainer:
     """
     Single GPU version of AdaptiveJudgmentTrainer.
+
+    Key feature: Real-time label generation during training.
+    Instead of using static labels from Phase 1 data collection,
+    we generate QA responses on-the-fly and determine the model's
+    current ability to answer each question.
     """
 
     def __init__(
@@ -213,11 +218,13 @@ class SingleGPUJudgmentTrainer:
         tokenizer,
         learning_rate: float = 1e-4,
         device: str = "cuda:0",
+        num_qa_trials: int = 5,  # Number of QA trials for real-time ability assessment
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.learning_rate = learning_rate
         self.device = device
+        self.num_qa_trials = num_qa_trials
 
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -244,6 +251,103 @@ class SingleGPUJudgmentTrainer:
         )
         inputs["labels"] = inputs["input_ids"].clone()
         return {k: v.to(self.device) for k, v in inputs.items()}
+
+    def _generate_qa_responses(self, question: str, num_trials: int = None) -> List[str]:
+        """
+        Generate multiple QA responses for a question to assess current ability.
+
+        Args:
+            question: The question to answer
+            num_trials: Number of responses to generate (default: self.num_qa_trials)
+
+        Returns:
+            List of response strings
+        """
+        if num_trials is None:
+            num_trials = self.num_qa_trials
+
+        messages = [
+            {"role": "system", "content": "Answer the question directly and concisely."},
+            {"role": "user", "content": question}
+        ]
+        prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+
+        responses = []
+        self.model.eval()
+        with torch.no_grad():
+            for _ in range(num_trials):
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    temperature=1.0,  # Use sampling for QA
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+                response = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
+                responses.append(response)
+
+        return responses
+
+    def _compute_realtime_ability(self, question: str, gold_answers: List[str]) -> str:
+        """
+        Compute the model's current ability to answer a question.
+
+        This generates num_qa_trials responses and classifies ability based on
+        how many are correct.
+
+        Args:
+            question: The question to assess
+            gold_answers: List of acceptable answers
+
+        Returns:
+            "can" / "uncertain" / "cannot"
+        """
+        from src.evaluator import is_correct, classify_ability
+
+        responses = self._generate_qa_responses(question)
+        correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
+        return classify_ability(correct_count, len(responses))
+
+    def _build_judgment_sample(
+        self,
+        question: str,
+        ability: str,
+        system_prompt: str,
+    ) -> Dict:
+        """
+        Build a training sample for judgment prediction.
+
+        Args:
+            question: The question
+            ability: "can" / "uncertain" / "cannot"
+            system_prompt: System prompt for judgment task
+
+        Returns:
+            Training sample dict with "messages" field
+        """
+        ability_to_answer = {
+            "can": "Yes",
+            "uncertain": "Uncertain",
+            "cannot": "No"
+        }
+        answer = ability_to_answer.get(ability, "No")
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"},
+            {"role": "assistant", "content": f"\\boxed{{{answer}}}"}
+        ]
+
+        return {"messages": messages, "ability": ability}
 
     def _test_judgment(
         self,
@@ -303,17 +407,29 @@ class SingleGPUJudgmentTrainer:
         system_prompt: str,
         num_epochs: int = 2,
         skip_correct: bool = True,
+        use_realtime_labels: bool = True,  # NEW: Use real-time ability assessment
     ) -> Dict:
         """
         Train on judgment samples with single GPU.
+
+        Args:
+            samples: List of samples with 'question' and 'normalized_answers' fields
+            system_prompt: System prompt for judgment task
+            num_epochs: Number of training epochs
+            skip_correct: Skip samples where judgment is already correct
+            use_realtime_labels: If True, compute ability labels in real-time by
+                                 generating QA responses. If False, use pre-computed
+                                 'ability' field from samples.
         """
         total_samples = len(samples)
 
-        print(f"\nSingle GPU Judgment Training: {total_samples} samples")
+        mode_str = "real-time labels" if use_realtime_labels else "static labels"
+        print(f"\nSingle GPU Judgment Training: {total_samples} samples ({mode_str})")
 
         stats = {
             "total_samples": total_samples,
             "epochs": num_epochs,
+            "use_realtime_labels": use_realtime_labels,
             "per_epoch": [],
         }
 
@@ -337,12 +453,20 @@ class SingleGPUJudgmentTrainer:
 
             for sample in pbar:
                 question = sample.get("question", "")
-                ability = sample.get("ability", "")
+                gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+
+                # Compute ability: either real-time or from pre-computed label
+                if use_realtime_labels and question and gold_answers:
+                    # Real-time: Generate QA responses and determine current ability
+                    ability = self._compute_realtime_ability(question, gold_answers)
+                else:
+                    # Static: Use pre-computed ability from sample
+                    ability = sample.get("ability", "")
 
                 if ability:
                     epoch_stats["by_ability"][ability]["total"] += 1
 
-                # Check if already correct
+                # Check if model already predicts correct judgment
                 if skip_correct and question and ability and self._test_judgment(question, ability, system_prompt):
                     epoch_stats["skipped_correct"] += 1
                     epoch_stats["correct_after"] += 1
@@ -354,11 +478,17 @@ class SingleGPUJudgmentTrainer:
                     })
                     continue
 
+                # Build training sample with current ability label
+                if use_realtime_labels:
+                    train_sample = self._build_judgment_sample(question, ability, system_prompt)
+                else:
+                    train_sample = sample
+
                 # Train on this sample
                 self.model.train()
                 self.optimizer.zero_grad()
 
-                inputs = self._tokenize_sample(sample)
+                inputs = self._tokenize_sample(train_sample)
                 outputs = self.model(**inputs)
                 loss = outputs.loss
                 loss.backward()

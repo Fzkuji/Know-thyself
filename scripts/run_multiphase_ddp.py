@@ -1358,6 +1358,7 @@ def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
                 system_prompt=SYSTEM_PROMPT,
                 num_epochs=args.epochs,
                 skip_correct=True,
+                use_realtime_labels=True,  # Use real-time QA-based ability labels
             )
 
             print(f"Training stats: {stats['per_epoch'][-1]}")
@@ -1757,6 +1758,7 @@ def run_phase3_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
                 system_prompt=SYSTEM_PROMPT,
                 num_epochs=args.epochs,
                 skip_correct=True,
+                use_realtime_labels=True,  # Use real-time QA-based ability labels
             )
 
             print(f"Training stats: {stats['per_epoch'][-1]}")
