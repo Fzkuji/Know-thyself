@@ -93,7 +93,7 @@ class AdaptiveKnowledgeTrainer:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=64,
-                temperature=0.1,  # Low temperature for deterministic check
+                temperature=1.0,  # Use same temperature as evaluation for consistency
                 do_sample=True,
                 pad_token_id=self.tokenizer.pad_token_id,
             )

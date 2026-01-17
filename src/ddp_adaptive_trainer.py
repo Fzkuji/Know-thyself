@@ -115,7 +115,7 @@ class DDPAdaptiveKnowledgeTrainer:
             outputs = self.raw_model.generate(
                 **inputs,
                 max_new_tokens=64,
-                temperature=0.1,
+                temperature=1.0,  # Use same temperature as evaluation for consistency
                 do_sample=True,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
