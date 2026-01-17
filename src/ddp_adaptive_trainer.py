@@ -235,7 +235,11 @@ class DDPAdaptiveKnowledgeTrainer:
                 # Update parameters (all GPUs update together)
                 self.optimizer.step()
 
-                # Gather statistics
+                # Gather statistics (each GPU tests its own sample)
+                local_correct_after = 0
+                local_still_wrong = 0
+                local_skipped = 0
+
                 if sample_idx < total_samples:
                     if needs_training:
                         losses.append(loss_value)
@@ -243,13 +247,21 @@ class DDPAdaptiveKnowledgeTrainer:
 
                         # Test after training
                         if question and gold_answers and self._test_knowledge(question, gold_answers):
-                            epoch_stats["correct_after"] += 1
+                            local_correct_after = 1
                         else:
-                            epoch_stats["still_wrong"] += 1
+                            local_still_wrong = 1
                     else:
-                        epoch_stats["skipped_correct"] += 1
+                        local_skipped = 1
                         if is_correct_now:
-                            epoch_stats["correct_after"] += 1
+                            local_correct_after = 1
+
+                # CRITICAL: Sync all GPUs after post-training test before next iteration
+                if dist.is_initialized():
+                    dist.barrier()
+
+                epoch_stats["correct_after"] += local_correct_after
+                epoch_stats["still_wrong"] += local_still_wrong
+                epoch_stats["skipped_correct"] += local_skipped
 
                 # Update progress bar
                 if is_main_process():
@@ -485,24 +497,41 @@ class DDPAdaptiveJudgmentTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.optimizer.step()
 
-                # Update local stats
+                # Gather statistics (each GPU tests its own sample)
+                local_correct_after = 0
+                local_still_wrong = 0
+                local_skipped = 0
+                local_ability_correct = {"can": 0, "uncertain": 0, "cannot": 0}
+                local_ability_total = {"can": 0, "uncertain": 0, "cannot": 0}
+
                 if sample_idx < total_samples and ability:
-                    epoch_stats["by_ability"][ability]["total"] += 1
+                    local_ability_total[ability] = 1
 
                     if needs_training:
                         losses.append(loss_value)
                         epoch_stats["trained"] += 1
 
                         if question and self._test_judgment(question, ability, system_prompt):
-                            epoch_stats["correct_after"] += 1
-                            epoch_stats["by_ability"][ability]["correct"] += 1
+                            local_correct_after = 1
+                            local_ability_correct[ability] = 1
                         else:
-                            epoch_stats["still_wrong"] += 1
+                            local_still_wrong = 1
                     else:
-                        epoch_stats["skipped_correct"] += 1
+                        local_skipped = 1
                         if is_correct_now:
-                            epoch_stats["correct_after"] += 1
-                            epoch_stats["by_ability"][ability]["correct"] += 1
+                            local_correct_after = 1
+                            local_ability_correct[ability] = 1
+
+                # CRITICAL: Sync all GPUs after post-training test before next iteration
+                if dist.is_initialized():
+                    dist.barrier()
+
+                epoch_stats["correct_after"] += local_correct_after
+                epoch_stats["still_wrong"] += local_still_wrong
+                epoch_stats["skipped_correct"] += local_skipped
+                for ab in ["can", "uncertain", "cannot"]:
+                    epoch_stats["by_ability"][ab]["total"] += local_ability_total[ab]
+                    epoch_stats["by_ability"][ab]["correct"] += local_ability_correct[ab]
 
                 if is_main_process():
                     processed = min((batch_idx + 1) * world_size, total_samples)
