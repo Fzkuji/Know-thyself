@@ -84,8 +84,12 @@ BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-1e-5}"
 NUM_GPUS="${NUM_GPUS:-8}"
 
-# Output directory
-OUTPUT_DIR="${OUTPUT_DIR:-experiments/phase1}"
+# Output directory: auto-generate from model name if not specified
+# e.g., "Qwen/Qwen2.5-14B-Instruct" -> "experiments/phase1_Qwen2.5-14B-Instruct"
+if [ -z "$OUTPUT_DIR" ]; then
+    MODEL_SHORT=$(basename "$MODEL")  # Extract last part: Qwen2.5-14B-Instruct
+    OUTPUT_DIR="experiments/phase1_${MODEL_SHORT}"
+fi
 mkdir -p "$OUTPUT_DIR"
 
 # Print configuration
