@@ -436,6 +436,37 @@ class ModelManager:
         if dist.is_initialized():
             dist.barrier()
 
+    def unload(self):
+        """
+        Unload model and free GPU memory.
+
+        Call this before using multi_gpu_inference to avoid OOM.
+        """
+        if self.model is None:
+            return
+
+        if is_main_process():
+            print(f"\n[ModelManager] Unloading model to free GPU memory...")
+
+        # Delete model references
+        del self.model
+        del self.raw_model
+        self.model = None
+        self.raw_model = None
+        self.tokenizer = None
+
+        # Force garbage collection and clear CUDA cache
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Synchronize
+        if dist.is_initialized():
+            dist.barrier()
+
+        if is_main_process():
+            print(f"[ModelManager] Model unloaded, GPU memory freed")
+
     def update_raw_model(self, raw_model):
         """
         Update raw_model reference after training.
@@ -1385,10 +1416,11 @@ def run_phase2_data_prep(args, pipeline: MultiPhasePipeline, samples: list) -> l
     return qa_data
 
 
-def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_path: str, samples: list) -> dict:
+def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
     """
     Phase 2 baseline evaluation (QA accuracy before training).
 
+    Uses pre-loaded model from ModelManager to avoid reloading.
     Results are cached and can be loaded if valid.
     Re-runs evaluation if cached results are invalid (regardless of --force).
     """
@@ -1408,7 +1440,15 @@ def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_path: str
 
     eval_results = {}
 
-    if is_main_process():
+    # Set model to eval mode on ALL ranks before evaluation
+    if model_mgr.raw_model is not None:
+        model_mgr.raw_model.eval()
+
+    # Sync all ranks before single-rank evaluation begins
+    if dist.is_initialized():
+        dist.barrier()
+
+    if is_main_process() and model_mgr.raw_model is not None:
         print("\n" + "=" * 60)
         print("Phase 2 Baseline Evaluation (Before Training)")
         print("=" * 60)
@@ -1418,16 +1458,18 @@ def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_path: str
 
         print("\n[Step 2.2a] Baseline QA accuracy (train split)...")
         before_train = test_qa_accuracy(
-            model_path, train_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
+            str(model_mgr.current_path), train_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
         eval_results['before_train'] = before_train
 
         print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
         before_val = test_qa_accuracy(
-            model_path, val_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus
+            str(model_mgr.current_path), val_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
         )
         print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
         eval_results['before_val'] = before_val
@@ -2038,18 +2080,18 @@ def main():
             # Data prep
             qa_data = run_phase2_data_prep(args, pipeline, samples)
 
-            # Determine model to load: use Phase 1 output if available
+            # Determine model to use: use Phase 1 output if available
             if phase1_model_path.exists():
                 phase2_base_model = str(phase1_model_path)
             else:
                 phase2_base_model = args.model
 
-            # Baseline eval (uses subprocess, model not loaded yet)
-            baseline_eval = run_phase2_baseline_eval(args, pipeline, phase2_base_model, samples)
-
-            # Load model for training (or continue using if already loaded from same path)
+            # Load model if not already loaded (for standalone Phase 2 or resuming)
             if not model_mgr.is_loaded() or model_mgr.current_path != phase2_base_model:
                 model_mgr.load(phase2_base_model)
+
+            # Baseline eval (uses pre-loaded model from model_mgr)
+            baseline_eval = run_phase2_baseline_eval(args, pipeline, model_mgr, samples)
 
             # Training
             run_phase2_training(args, pipeline, model_mgr, qa_data)
