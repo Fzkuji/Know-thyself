@@ -1436,104 +1436,6 @@ def run_phase2_data_prep(args, pipeline: MultiPhasePipeline, samples: list) -> l
     return qa_data
 
 
-def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, samples: list) -> dict:
-    """
-    Phase 2 baseline evaluation (QA accuracy before training).
-
-    First tries to reuse QA accuracy from Phase 1 after-training results.
-    Only runs new evaluation if Phase 1 results don't have QA accuracy.
-    """
-    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
-    results_file = "baseline_results.json"
-
-    # Check for cached Phase 2 baseline results
-    cached_results = load_phase_results(phase_output, results_file)
-    if is_baseline_results_valid(cached_results, phase=2) and not args.force:
-        if is_main_process():
-            print(f"\n[Phase 2] Loading cached baseline results from {phase_output / results_file}")
-        return cached_results
-
-    # Try to reuse Phase 1 after-training QA results (same model, no need to re-test)
-    phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
-    phase1_after = load_phase_results(phase1_output, "after_train_results.json")
-
-    if phase1_after:
-        after_train = phase1_after.get('after_train', {})
-        after_val = phase1_after.get('after_val', {})
-
-        # Check if Phase 1 has QA accuracy results
-        if 'qa_accuracy' in after_train and 'qa_accuracy' in after_val:
-            if is_main_process():
-                print("\n" + "=" * 60)
-                print("Phase 2 Baseline (Reusing Phase 1 QA Results)")
-                print("=" * 60)
-                print(f"\n[Step 2.2] Using QA accuracy from Phase 1 after-training evaluation")
-                print(f"  Train split: {after_train['qa_accuracy']:.1f}%")
-                print(f"  Val split: {after_val['qa_accuracy']:.1f}%")
-
-            eval_results = {
-                'before_train': {'qa_accuracy': after_train['qa_accuracy']},
-                'before_val': {'qa_accuracy': after_val['qa_accuracy']},
-            }
-
-            # Save results
-            if is_main_process():
-                save_phase_results(phase_output, eval_results, results_file)
-
-            if dist.is_initialized():
-                dist.barrier()
-
-            return eval_results
-
-    # Phase 1 doesn't have QA results, need to run evaluation
-    if is_main_process():
-        print(f"\n[Phase 2] Phase 1 results don't have QA accuracy, running evaluation...")
-
-    eval_results = {}
-
-    # Set model to eval mode on ALL ranks before evaluation
-    if model_mgr.raw_model is not None:
-        model_mgr.raw_model.eval()
-
-    # Sync all ranks before single-rank evaluation begins
-    if dist.is_initialized():
-        dist.barrier()
-
-    if is_main_process() and model_mgr.raw_model is not None:
-        print("\n" + "=" * 60)
-        print("Phase 2 Baseline Evaluation (Before Training)")
-        print("=" * 60)
-
-        train_test_samples = samples[:args.test_samples]
-        val_test_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-
-        print("\n[Step 2.2a] Baseline QA accuracy (train split)...")
-        before_train = test_qa_accuracy(
-            str(model_mgr.current_path), train_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus,
-            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
-        )
-        print(f"  Accuracy: {before_train['qa_accuracy']:.1f}%")
-        eval_results['before_train'] = before_train
-
-        print("\n[Step 2.2b] Baseline QA accuracy (validation split)...")
-        before_val = test_qa_accuracy(
-            str(model_mgr.current_path), val_test_samples, args.num_trials,
-            args.inference_batch_size, args.num_gpus,
-            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
-        )
-        print(f"  Accuracy: {before_val['qa_accuracy']:.1f}%")
-        eval_results['before_val'] = before_val
-
-        # Save results
-        save_phase_results(phase_output, eval_results, results_file)
-
-    if dist.is_initialized():
-        dist.barrier()
-
-    return eval_results
-
-
 def run_phase2_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, qa_data: list):
     """
     Phase 2 training: knowledge learning.
@@ -2201,8 +2103,20 @@ def main():
             if not model_mgr.is_loaded() or model_mgr.current_path != phase2_base_model:
                 model_mgr.load(phase2_base_model)
 
-            # Baseline eval (uses pre-loaded model from model_mgr)
-            baseline_eval = run_phase2_baseline_eval(args, pipeline, model_mgr, samples)
+            # Get baseline from Phase 1 after-training results (no need to re-test)
+            phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
+            phase1_after = load_phase_results(phase1_output, "after_train_results.json")
+            baseline_eval = {}
+            if phase1_after:
+                after_train = phase1_after.get('after_train', {})
+                after_val = phase1_after.get('after_val', {})
+                if 'qa_accuracy' in after_train and 'qa_accuracy' in after_val:
+                    baseline_eval = {
+                        'before_train': {'qa_accuracy': after_train['qa_accuracy']},
+                        'before_val': {'qa_accuracy': after_val['qa_accuracy']},
+                    }
+                    if is_main_process():
+                        print(f"\n[Phase 2] Using QA baseline from Phase 1: Train={after_train['qa_accuracy']:.1f}%, Val={after_val['qa_accuracy']:.1f}%")
 
             # Training
             run_phase2_training(args, pipeline, model_mgr, qa_data)
