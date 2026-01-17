@@ -218,7 +218,7 @@ class SingleGPUJudgmentTrainer:
         tokenizer,
         learning_rate: float = 1e-4,
         device: str = "cuda:0",
-        num_qa_trials: int = 5,  # Number of QA trials for real-time ability assessment
+        num_qa_trials: int = 10,  # Number of QA trials for real-time ability assessment
     ):
         self.model = model
         self.tokenizer = tokenizer

@@ -1939,7 +1939,7 @@ def main():
     # Data params
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--test_samples", type=int, default=100)
-    parser.add_argument("--num_trials", type=int, default=5)
+    parser.add_argument("--num_trials", type=int, default=10)
     parser.add_argument("--inference_batch_size", type=int, default=16)
 
     # Training params
