@@ -256,6 +256,8 @@ class SingleGPUJudgmentTrainer:
         """
         Generate multiple QA responses for a question to assess current ability.
 
+        Uses batched generation for efficiency (all trials in one forward pass).
+
         Args:
             question: The question to answer
             num_trials: Number of responses to generate (default: self.num_qa_trials)
@@ -276,24 +278,35 @@ class SingleGPUJudgmentTrainer:
             add_generation_prompt=True
         )
 
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        # Batch: repeat the same prompt num_trials times
+        prompts = [prompt] * num_trials
+        self.tokenizer.padding_side = "left"
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(self.device)
 
-        responses = []
         self.model.eval()
         with torch.no_grad():
-            for _ in range(num_trials):
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=64,
-                    temperature=1.0,  # Use sampling for QA
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                )
-                response = self.tokenizer.decode(
-                    outputs[0][inputs["input_ids"].shape[1]:],
-                    skip_special_tokens=True
-                ).strip()
-                responses.append(response)
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=64,
+                temperature=1.0,
+                do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+
+        # Decode all responses
+        responses = []
+        input_len = inputs["input_ids"].shape[1]
+        for output in outputs:
+            response = self.tokenizer.decode(
+                output[input_len:],
+                skip_special_tokens=True
+            ).strip()
+            responses.append(response)
 
         return responses
 
