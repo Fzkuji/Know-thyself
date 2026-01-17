@@ -69,16 +69,20 @@ log "Step 1: Collecting QA responses"
 
 RESPONSES_FILE="$OUTPUT_DIR/responses.jsonl"
 if [ ! -f "$RESPONSES_FILE" ]; then
-    python scripts/step1_collect_responses.py \
+    if python scripts/step1_collect_responses.py \
         --model "$MODEL" \
         --split train \
         --num_samples "$NUM_SAMPLES" \
         --num_trials "$NUM_TRIALS" \
-        --batch_size "$BATCH_SIZE" \
+        --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
         --output "$RESPONSES_FILE" \
-        2>&1 | tee "$OUTPUT_DIR/step1.log"
-    log "Response collection completed"
+        2>&1 | tee "$OUTPUT_DIR/step1.log"; then
+        log "Response collection completed"
+    else
+        log "ERROR: Response collection failed!"
+        exit 1
+    fi
 else
     log "Responses already collected, skipping"
 fi
@@ -88,11 +92,15 @@ log "Step 2: Building training data"
 
 TRAINING_DATA="$OUTPUT_DIR/training_data.jsonl"
 if [ ! -f "$TRAINING_DATA" ]; then
-    python scripts/step2_build_dataset.py \
+    if python scripts/step2_build_dataset.py \
         --input "$RESPONSES_FILE" \
         --output "$TRAINING_DATA" \
-        2>&1 | tee "$OUTPUT_DIR/step2.log"
-    log "Training data built"
+        2>&1 | tee "$OUTPUT_DIR/step2.log"; then
+        log "Training data built"
+    else
+        log "ERROR: Training data build failed!"
+        exit 1
+    fi
 else
     log "Training data already exists, skipping"
 fi
@@ -109,14 +117,14 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
     EPOCH_OUTPUT="$OUTPUT_DIR/epoch_$epoch"
     mkdir -p "$EPOCH_OUTPUT"
 
-    # Skip if already completed
-    if [ -f "$EPOCH_OUTPUT/training_complete" ]; then
+    # Skip if already completed (check for config.json as proof of successful save)
+    if [ -f "$EPOCH_OUTPUT/config.json" ]; then
         log "Epoch $epoch already completed, skipping to evaluation"
         CURRENT_MODEL="$EPOCH_OUTPUT"
     else
         # Train one epoch
         log "Training epoch $epoch..."
-        python scripts/step3_train_epoch.py \
+        if python scripts/step3_train_epoch.py \
             --model "$CURRENT_MODEL" \
             --input "$TRAINING_DATA" \
             --output_dir "$EPOCH_OUTPUT" \
@@ -125,11 +133,13 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
             --num_trials "$NUM_TRIALS" \
             --skip_correct \
             --use_realtime_labels \
-            2>&1 | tee "$EPOCH_OUTPUT/train.log"
-
-        touch "$EPOCH_OUTPUT/training_complete"
-        CURRENT_MODEL="$EPOCH_OUTPUT"
-        log "Epoch $epoch training complete"
+            2>&1 | tee "$EPOCH_OUTPUT/train.log"; then
+            CURRENT_MODEL="$EPOCH_OUTPUT"
+            log "Epoch $epoch training complete"
+        else
+            log "ERROR: Epoch $epoch training failed!"
+            exit 1
+        fi
     fi
 
     # Evaluate after this epoch (always run to see progress)
