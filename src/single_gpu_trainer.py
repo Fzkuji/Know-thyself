@@ -461,15 +461,12 @@ class SingleGPUJudgmentTrainer:
         num_epochs: int = 2,
         skip_correct: bool = True,
         use_realtime_labels: bool = True,
-        val_samples: List[Dict] = None,  # NEW: validation samples for per-epoch eval
     ) -> Dict:
         """
         Train on judgment samples with single GPU.
 
-        Standard training loop:
-        1. Train all samples in epoch
-        2. After epoch ends, evaluate train and validation sets
-        3. Report true accuracy (not immediate post-training test)
+        Training only - no evaluation during training.
+        Evaluation should be done separately using multi-GPU inference after saving model.
 
         Args:
             samples: List of samples with 'question' and 'normalized_answers' fields
@@ -477,7 +474,6 @@ class SingleGPUJudgmentTrainer:
             num_epochs: Number of training epochs
             skip_correct: Skip samples where judgment is already correct (checked at epoch start)
             use_realtime_labels: If True, compute ability labels in real-time
-            val_samples: Optional validation samples to evaluate each epoch
         """
         total_samples = len(samples)
 
@@ -503,10 +499,9 @@ class SingleGPUJudgmentTrainer:
             losses = []
 
             print(f"\n{'='*60}")
-            print(f"Epoch {epoch+1}/{num_epochs} - Training Phase")
+            print(f"Epoch {epoch+1}/{num_epochs}")
             print(f"{'='*60}")
 
-            # ===== Training Phase =====
             pbar = tqdm(samples, desc=f"Training")
 
             for sample in pbar:
@@ -561,53 +556,15 @@ class SingleGPUJudgmentTrainer:
             if losses:
                 epoch_stats["avg_loss"] = sum(losses) / len(losses)
 
-            # ===== Evaluation Phase (after entire epoch) =====
-            print(f"\nEpoch {epoch+1}/{num_epochs} - Evaluation Phase")
-
-            # Evaluate training set
-            print("Evaluating training set...")
-            train_eval = self._evaluate_samples(samples, system_prompt, use_realtime_labels, "Train Eval")
-            epoch_stats["train_eval"] = train_eval
-
-            # Evaluate validation set if provided (disabled - too slow)
-            val_eval = None
-            # if val_samples:
-            #     print("Evaluating validation set...")
-            #     val_eval = self._evaluate_samples(val_samples, system_prompt, use_realtime_labels, "Val Eval")
-            #     epoch_stats["val_eval"] = val_eval
-
             stats["per_epoch"].append(epoch_stats)
 
-            # Print summary
-            train_acc = train_eval["correct"] / total_samples * 100 if total_samples > 0 else 0
-            print(f"\n{'='*60}")
-            print(f"Epoch {epoch+1} Summary:")
-            print(f"{'='*60}")
-            print(f"  Training: {epoch_stats['trained']} trained, {epoch_stats['skipped']} skipped")
+            # Print epoch summary
+            print(f"\n  Epoch {epoch+1} Summary:")
+            print(f"    Trained: {epoch_stats['trained']}, Skipped: {epoch_stats['skipped']}")
             if epoch_stats.get("avg_loss"):
-                print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
-
-            print(f"\n  Train Set Accuracy: {train_eval['correct']}/{total_samples} ({train_acc:.1f}%)")
-            print(f"    By ability:")
-            for ability in ["can", "uncertain", "cannot"]:
-                ab_stats = train_eval["by_ability"][ability]
-                if ab_stats["total"] > 0:
-                    acc = ab_stats["correct"] / ab_stats["total"] * 100
-                    print(f"      {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
-
-            if val_eval:
-                val_acc = val_eval["correct"] / val_eval["total"] * 100 if val_eval["total"] > 0 else 0
-                print(f"\n  Val Set Accuracy: {val_eval['correct']}/{val_eval['total']} ({val_acc:.1f}%)")
-                print(f"    By ability:")
-                for ability in ["can", "uncertain", "cannot"]:
-                    ab_stats = val_eval["by_ability"][ability]
-                    if ab_stats["total"] > 0:
-                        acc = ab_stats["correct"] / ab_stats["total"] * 100
-                        print(f"      {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
-
-            # Early stopping based on train accuracy
-            if train_eval["correct"] >= total_samples:
-                print(f"\nAll train samples correct! Stopping early at epoch {epoch+1}")
-                break
+                print(f"    Average loss: {epoch_stats['avg_loss']:.4f}")
+            print(f"    By ability: can={epoch_stats['by_ability_trained']['can']}, "
+                  f"uncertain={epoch_stats['by_ability_trained']['uncertain']}, "
+                  f"cannot={epoch_stats['by_ability_trained']['cannot']}")
 
         return stats

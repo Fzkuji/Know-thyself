@@ -1355,11 +1355,12 @@ def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
     return eval_results
 
 
-def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, training_data: list, val_samples: list = None):
+def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelManager, training_data: list):
     """
     Phase 1 training: train judgment ability.
 
-    Uses model from ModelManager, updates raw_model reference after training.
+    Training only - no evaluation during training.
+    Evaluation is done separately in run_phase1_evaluation using multi-GPU inference.
     """
     phase_output = pipeline.get_phase_output_dir("phase1_judgment")
     adapter_path = phase_output / "judgment_v1"
@@ -1382,7 +1383,7 @@ def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
                 tokenizer=model_mgr.tokenizer,
                 learning_rate=args.lr,
                 device=f"cuda:{model_mgr.local_rank}",
-                num_qa_trials=args.num_trials,  # Pass num_trials to trainer
+                num_qa_trials=args.num_trials,
             )
 
             stats = trainer.train_dataset(
@@ -1391,7 +1392,6 @@ def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
                 num_epochs=args.epochs,
                 skip_correct=True,
                 use_realtime_labels=True,
-                val_samples=val_samples,  # Pass validation samples for per-epoch evaluation
             )
 
             print(f"Training stats: {stats['per_epoch'][-1]}")
@@ -2141,16 +2141,11 @@ def main():
             # Baseline eval (uses subprocess)
             baseline_eval = run_phase1_baseline_eval(args, pipeline)
 
-            # Load validation samples for per-epoch evaluation during training
-            val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-            if is_main_process():
-                print(f"Loaded {len(val_samples)} validation samples for per-epoch evaluation")
-
             # Load model for training
             model_mgr.load(args.model)
 
-            # Training (with validation evaluation each epoch)
-            run_phase1_training(args, pipeline, model_mgr, training_data, val_samples=val_samples)
+            # Training (no evaluation during training - evaluation done separately after)
+            run_phase1_training(args, pipeline, model_mgr, training_data)
 
             # Final evaluation (uses pre-loaded model)
             after_eval = run_phase1_evaluation(args, pipeline, model_mgr, samples, baseline_results=baseline_eval)
