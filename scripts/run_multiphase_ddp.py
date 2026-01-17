@@ -1377,6 +1377,25 @@ def run_phase1_evaluation(args, pipeline: MultiPhasePipeline, model_mgr: ModelMa
             args.num_trials, args.inference_batch_size
         )
 
+        # Also test QA accuracy (will be used as Phase 2 baseline)
+        print("\n[Step 1.5c] After training QA accuracy (train split)...")
+        qa_train = test_qa_accuracy(
+            str(model_mgr.current_path), train_test_samples[:args.test_samples], args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
+        )
+        eval_results['after_train'].update(qa_train)
+        print(f"  QA Accuracy: {qa_train['qa_accuracy']:.1f}%")
+
+        print("\n[Step 1.5d] After training QA accuracy (validation split)...")
+        qa_val = test_qa_accuracy(
+            str(model_mgr.current_path), val_test_samples, args.num_trials,
+            args.inference_batch_size, args.num_gpus,
+            model=model_mgr.raw_model, tokenizer=model_mgr.tokenizer
+        )
+        eval_results['after_val'].update(qa_val)
+        print(f"  QA Accuracy: {qa_val['qa_accuracy']:.1f}%")
+
         # Save results
         save_phase_results(phase_output, eval_results, results_file)
 
@@ -1421,23 +1440,54 @@ def run_phase2_baseline_eval(args, pipeline: MultiPhasePipeline, model_mgr: Mode
     """
     Phase 2 baseline evaluation (QA accuracy before training).
 
-    Uses pre-loaded model from ModelManager to avoid reloading.
-    Results are cached and can be loaded if valid.
-    Re-runs evaluation if cached results are invalid (regardless of --force).
+    First tries to reuse QA accuracy from Phase 1 after-training results.
+    Only runs new evaluation if Phase 1 results don't have QA accuracy.
     """
     phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
     results_file = "baseline_results.json"
 
-    # Check for cached results - validate they are complete
+    # Check for cached Phase 2 baseline results
     cached_results = load_phase_results(phase_output, results_file)
     if is_baseline_results_valid(cached_results, phase=2) and not args.force:
         if is_main_process():
             print(f"\n[Phase 2] Loading cached baseline results from {phase_output / results_file}")
         return cached_results
 
-    # Results invalid or force mode - need to re-run evaluation
-    if is_main_process() and cached_results and not is_baseline_results_valid(cached_results, phase=2):
-        print(f"\n[Phase 2] Cached baseline results are invalid, re-running evaluation...")
+    # Try to reuse Phase 1 after-training QA results (same model, no need to re-test)
+    phase1_output = pipeline.get_phase_output_dir("phase1_judgment")
+    phase1_after = load_phase_results(phase1_output, "after_train_results.json")
+
+    if phase1_after:
+        after_train = phase1_after.get('after_train', {})
+        after_val = phase1_after.get('after_val', {})
+
+        # Check if Phase 1 has QA accuracy results
+        if 'qa_accuracy' in after_train and 'qa_accuracy' in after_val:
+            if is_main_process():
+                print("\n" + "=" * 60)
+                print("Phase 2 Baseline (Reusing Phase 1 QA Results)")
+                print("=" * 60)
+                print(f"\n[Step 2.2] Using QA accuracy from Phase 1 after-training evaluation")
+                print(f"  Train split: {after_train['qa_accuracy']:.1f}%")
+                print(f"  Val split: {after_val['qa_accuracy']:.1f}%")
+
+            eval_results = {
+                'before_train': {'qa_accuracy': after_train['qa_accuracy']},
+                'before_val': {'qa_accuracy': after_val['qa_accuracy']},
+            }
+
+            # Save results
+            if is_main_process():
+                save_phase_results(phase_output, eval_results, results_file)
+
+            if dist.is_initialized():
+                dist.barrier()
+
+            return eval_results
+
+    # Phase 1 doesn't have QA results, need to run evaluation
+    if is_main_process():
+        print(f"\n[Phase 2] Phase 1 results don't have QA accuracy, running evaluation...")
 
     eval_results = {}
 
