@@ -16,7 +16,7 @@ set -e  # Exit on error
 # ============== Configuration ==============
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 NUM_SAMPLES="${NUM_SAMPLES:-500}"
-TEST_SAMPLES="${TEST_SAMPLES:-100}"
+TEST_SAMPLES="${TEST_SAMPLES:-1000}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
