@@ -88,6 +88,21 @@ def classify_ability(correct_count: int, total: int = 5) -> str:
         return "uncertain"
 
 
+def classify_ability_binary(correct: bool) -> str:
+    """
+    Binary classification: correct -> can, incorrect -> cannot.
+
+    Used for binary mode where temperature=0 and single trial.
+
+    Args:
+        correct: Whether the single response was correct
+
+    Returns:
+        "can" / "cannot"
+    """
+    return "can" if correct else "cannot"
+
+
 def evaluate_samples(samples: List[Dict]) -> List[Dict]:
     """
     Evaluate all samples and add classification.
