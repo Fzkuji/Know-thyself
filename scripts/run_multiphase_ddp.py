@@ -643,7 +643,7 @@ class ModelManager:
 def test_qa_accuracy(
     model_path: str,
     samples: list,
-    num_trials: int = 5,
+    num_trials: int = 10,
     inference_batch_size: int = 16,
     num_gpus: int = None,
     model=None,
@@ -889,7 +889,7 @@ def evaluate_judgment_with_model(
     model,
     tokenizer,
     samples: list,
-    num_trials: int = 5,
+    num_trials: int = 10,
     inference_batch_size: int = 16,
     precomputed_abilities: dict = None,  # NEW: Use abilities from training
 ) -> dict:
