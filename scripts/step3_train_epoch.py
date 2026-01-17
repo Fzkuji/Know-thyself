@@ -31,7 +31,7 @@ from src.label_generator import SYSTEM_PROMPT
 from src.evaluator import is_correct, classify_ability
 
 
-def generate_qa_responses(model, tokenizer, question: str, num_trials: int, device: str):
+def generate_qa_responses(model, tokenizer, question: str, num_trials: int):
     """Generate multiple QA responses for a question (batched)."""
     messages = [
         {"role": "system", "content": "Answer the question directly and concisely."},
@@ -51,7 +51,7 @@ def generate_qa_responses(model, tokenizer, question: str, num_trials: int, devi
         return_tensors="pt",
         padding=True,
         truncation=True,
-    ).to(device)
+    ).to(model.device)
 
     model.eval()
     with torch.no_grad():
@@ -75,14 +75,14 @@ def generate_qa_responses(model, tokenizer, question: str, num_trials: int, devi
     return responses
 
 
-def compute_realtime_ability(model, tokenizer, question: str, gold_answers: list, num_trials: int, device: str) -> str:
+def compute_realtime_ability(model, tokenizer, question: str, gold_answers: list, num_trials: int) -> str:
     """Compute model's current ability by generating QA responses."""
-    responses = generate_qa_responses(model, tokenizer, question, num_trials, device)
+    responses = generate_qa_responses(model, tokenizer, question, num_trials)
     correct_count = sum(1 for r in responses if is_correct(r, gold_answers))
     return classify_ability(correct_count, len(responses))
 
 
-def test_judgment(model, tokenizer, question: str, expected_ability: str, system_prompt: str, device: str) -> bool:
+def test_judgment(model, tokenizer, question: str, expected_ability: str, system_prompt: str) -> bool:
     """Test if model predicts the correct ability."""
     import re
 
@@ -96,7 +96,7 @@ def test_judgment(model, tokenizer, question: str, expected_ability: str, system
         add_generation_prompt=True
     )
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     model.eval()
     with torch.no_grad():
@@ -154,7 +154,6 @@ def train_one_epoch(
     samples: list,
     system_prompt: str,
     optimizer,
-    device: str,
     num_trials: int = 10,
     skip_correct: bool = True,
     use_realtime_labels: bool = True,
@@ -176,12 +175,12 @@ def train_one_epoch(
 
         # Compute ability
         if use_realtime_labels and question and gold_answers:
-            ability = compute_realtime_ability(model, tokenizer, question, gold_answers, num_trials, device)
+            ability = compute_realtime_ability(model, tokenizer, question, gold_answers, num_trials)
         else:
             ability = sample.get("ability", "")
 
         # Check if already correct (skip training for this sample)
-        if skip_correct and question and ability and test_judgment(model, tokenizer, question, ability, system_prompt, device):
+        if skip_correct and question and ability and test_judgment(model, tokenizer, question, ability, system_prompt):
             epoch_stats["skipped"] += 1
             pbar.set_postfix({"skip": epoch_stats["skipped"], "train": epoch_stats["trained"]})
             continue
@@ -206,7 +205,7 @@ def train_one_epoch(
             padding=True,
         )
         inputs["labels"] = inputs["input_ids"].clone()
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
         # Train step
         model.train()
@@ -254,8 +253,6 @@ def main():
                         help="Skip samples where model already judges correctly")
     parser.add_argument("--use_realtime_labels", action="store_true", default=True,
                         help="Compute ability labels in real-time")
-    parser.add_argument("--device", type=str, default="cuda:0",
-                        help="Device to use")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -274,12 +271,12 @@ def main():
     training_data = load_from_jsonl(args.input)
     print(f"Loaded {len(training_data)} samples")
 
-    # Load model
+    # Load model (device_map="auto" for multi-GPU support)
     print(f"\nLoading model from {args.model}...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16,
-        device_map=args.device,
+        device_map="auto",
         trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -297,7 +294,6 @@ def main():
         samples=training_data,
         system_prompt=SYSTEM_PROMPT,
         optimizer=optimizer,
-        device=args.device,
         num_trials=args.num_trials,
         skip_correct=args.skip_correct,
         use_realtime_labels=args.use_realtime_labels,
