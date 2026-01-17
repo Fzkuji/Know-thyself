@@ -1339,29 +1339,27 @@ def run_phase1_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         return
 
     if is_main_process():
-        print(f"\n[Step 1.4] Training judgment ability with DDP (full fine-tuning)...")
+        print(f"\n[Step 1.4] Training judgment ability (single GPU, full fine-tuning)...")
 
     if args.adaptive:
-        from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+        from src.single_gpu_trainer import SingleGPUJudgmentTrainer
 
-        trainer = DDPAdaptiveJudgmentTrainer(
-            model=model_mgr.model,
-            tokenizer=model_mgr.tokenizer,
-            learning_rate=args.lr,
-            local_rank=model_mgr.local_rank,
-        )
-
-        stats = trainer.train_dataset(
-            training_data,
-            system_prompt=SYSTEM_PROMPT,
-            num_epochs=args.epochs,
-            skip_correct=True,
-        )
-
-        # Update raw_model reference
-        model_mgr.update_raw_model(trainer.raw_model)
-
+        # Only train on main process, others wait
         if is_main_process():
+            trainer = SingleGPUJudgmentTrainer(
+                model=model_mgr.raw_model,
+                tokenizer=model_mgr.tokenizer,
+                learning_rate=args.lr,
+                device=f"cuda:{model_mgr.local_rank}",
+            )
+
+            stats = trainer.train_dataset(
+                training_data,
+                system_prompt=SYSTEM_PROMPT,
+                num_epochs=args.epochs,
+                skip_correct=True,
+            )
+
             print(f"Training stats: {stats['per_epoch'][-1]}")
 
     # Save model
@@ -1505,25 +1503,23 @@ def run_phase2_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         })
 
     if args.adaptive:
-        from src.ddp_adaptive_trainer import DDPAdaptiveKnowledgeTrainer
+        from src.single_gpu_trainer import SingleGPUKnowledgeTrainer
 
-        trainer = DDPAdaptiveKnowledgeTrainer(
-            model=model_mgr.model,
-            tokenizer=model_mgr.tokenizer,
-            learning_rate=args.lr,
-            local_rank=model_mgr.local_rank,
-        )
-
-        stats = trainer.train_dataset(
-            adaptive_samples,
-            num_epochs=args.knowledge_epochs,
-            skip_correct=True,
-        )
-
-        # Update raw_model reference
-        model_mgr.update_raw_model(trainer.raw_model)
-
+        # Only train on main process, others wait
         if is_main_process():
+            trainer = SingleGPUKnowledgeTrainer(
+                model=model_mgr.raw_model,
+                tokenizer=model_mgr.tokenizer,
+                learning_rate=args.lr,
+                device=f"cuda:{model_mgr.local_rank}",
+            )
+
+            stats = trainer.train_dataset(
+                adaptive_samples,
+                num_epochs=args.knowledge_epochs,
+                skip_correct=True,
+            )
+
             print(f"Training stats: {stats['per_epoch'][-1]}")
 
     # Save model
@@ -1742,28 +1738,27 @@ def run_phase3_training(args, pipeline: MultiPhasePipeline, model_mgr: ModelMana
         return
 
     if is_main_process():
-        print(f"\n[Step 3.3] Training judgment v2 with DDP (full fine-tuning)...")
+        print(f"\n[Step 3.3] Training judgment v2 (single GPU, full fine-tuning)...")
 
     if args.adaptive:
-        from src.ddp_adaptive_trainer import DDPAdaptiveJudgmentTrainer
+        from src.single_gpu_trainer import SingleGPUJudgmentTrainer
 
-        trainer = DDPAdaptiveJudgmentTrainer(
-            model=model_mgr.model,
-            tokenizer=model_mgr.tokenizer,
-            learning_rate=args.lr,
-            local_rank=model_mgr.local_rank,
-        )
-
-        stats = trainer.train_dataset(
-            training_data,
-            system_prompt=SYSTEM_PROMPT,
-            num_epochs=args.epochs,
-            skip_correct=True,
-        )
-
-        model_mgr.update_raw_model(trainer.raw_model)
-
+        # Only train on main process, others wait
         if is_main_process():
+            trainer = SingleGPUJudgmentTrainer(
+                model=model_mgr.raw_model,
+                tokenizer=model_mgr.tokenizer,
+                learning_rate=args.lr,
+                device=f"cuda:{model_mgr.local_rank}",
+            )
+
+            stats = trainer.train_dataset(
+                training_data,
+                system_prompt=SYSTEM_PROMPT,
+                num_epochs=args.epochs,
+                skip_correct=True,
+            )
+
             print(f"Training stats: {stats['per_epoch'][-1]}")
 
     # Save model
