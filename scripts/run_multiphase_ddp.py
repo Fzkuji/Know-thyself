@@ -936,8 +936,8 @@ def evaluate_judgment_with_model(
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=32,
-                temperature=0.1,
-                do_sample=True,
+                temperature=0,
+                do_sample=False,  # Greedy decoding for judgment
                 pad_token_id=tokenizer.pad_token_id,
             )
 

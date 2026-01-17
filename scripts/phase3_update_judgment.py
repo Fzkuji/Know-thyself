@@ -220,7 +220,7 @@ def evaluate_judgment(
     inference = create_inference(
         model_name=model_path,
         inference_batch_size=inference_batch_size,
-        temperature=0.1,  # Low temperature for judgment
+        temperature=0,  # Greedy decoding for judgment
         num_gpus=num_gpus,
         lora_path=adapter_path,
     )

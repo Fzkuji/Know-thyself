@@ -76,7 +76,7 @@ def evaluate_with_inference(
     inference = create_inference(
         model_name=model_name,
         inference_batch_size=inference_batch_size,
-        temperature=0.1,  # Low temperature for judgment prediction
+        temperature=0,  # Greedy decoding for judgment prediction
         num_gpus=num_gpus,
         lora_path=lora_path if lora_path and lora_path.lower() != "none" else None,
     )
