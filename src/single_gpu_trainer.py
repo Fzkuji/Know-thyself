@@ -401,6 +401,59 @@ class SingleGPUJudgmentTrainer:
 
         return predicted_ability == expected_ability
 
+    def _evaluate_samples(
+        self,
+        samples: List[Dict],
+        system_prompt: str,
+        use_realtime_labels: bool,
+        desc: str = "Evaluating",
+    ) -> Dict:
+        """
+        Evaluate judgment accuracy on a set of samples.
+
+        Args:
+            samples: Samples to evaluate
+            system_prompt: System prompt for judgment
+            use_realtime_labels: Whether to compute ability in real-time
+            desc: Description for progress bar
+
+        Returns:
+            Dict with evaluation stats
+        """
+        from src.evaluator import is_correct, classify_ability
+
+        eval_stats = {
+            "correct": 0,
+            "total": len(samples),
+            "by_ability": {"can": {"correct": 0, "total": 0},
+                           "uncertain": {"correct": 0, "total": 0},
+                           "cannot": {"correct": 0, "total": 0}},
+        }
+
+        eval_pbar = tqdm(samples, desc=desc)
+        for sample in eval_pbar:
+            question = sample.get("question", "")
+            gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+
+            # Compute ability
+            if use_realtime_labels and question and gold_answers:
+                ability = self._compute_realtime_ability(question, gold_answers)
+            else:
+                ability = sample.get("ability", "")
+
+            if ability:
+                eval_stats["by_ability"][ability]["total"] += 1
+
+            # Test judgment
+            if question and ability and self._test_judgment(question, ability, system_prompt):
+                eval_stats["correct"] += 1
+                if ability:
+                    eval_stats["by_ability"][ability]["correct"] += 1
+
+            eval_pbar.set_postfix({"correct": eval_stats["correct"]})
+
+        return eval_stats
+
     def train_dataset(
         self,
         samples: List[Dict],
@@ -408,13 +461,14 @@ class SingleGPUJudgmentTrainer:
         num_epochs: int = 2,
         skip_correct: bool = True,
         use_realtime_labels: bool = True,
+        val_samples: List[Dict] = None,  # NEW: validation samples for per-epoch eval
     ) -> Dict:
         """
         Train on judgment samples with single GPU.
 
         Standard training loop:
         1. Train all samples in epoch
-        2. After epoch ends, evaluate all samples from scratch
+        2. After epoch ends, evaluate train and validation sets
         3. Report true accuracy (not immediate post-training test)
 
         Args:
@@ -423,6 +477,7 @@ class SingleGPUJudgmentTrainer:
             num_epochs: Number of training epochs
             skip_correct: Skip samples where judgment is already correct (checked at epoch start)
             use_realtime_labels: If True, compute ability labels in real-time
+            val_samples: Optional validation samples to evaluate each epoch
         """
         total_samples = len(samples)
 
@@ -508,60 +563,51 @@ class SingleGPUJudgmentTrainer:
 
             # ===== Evaluation Phase (after entire epoch) =====
             print(f"\nEpoch {epoch+1}/{num_epochs} - Evaluation Phase")
-            print("Re-evaluating all samples from scratch...")
 
-            eval_stats = {
-                "correct": 0,
-                "by_ability": {"can": {"correct": 0, "total": 0},
-                               "uncertain": {"correct": 0, "total": 0},
-                               "cannot": {"correct": 0, "total": 0}},
-            }
+            # Evaluate training set
+            print("Evaluating training set...")
+            train_eval = self._evaluate_samples(samples, system_prompt, use_realtime_labels, "Train Eval")
+            epoch_stats["train_eval"] = train_eval
 
-            eval_pbar = tqdm(samples, desc="Evaluating")
-            for sample in eval_pbar:
-                question = sample.get("question", "")
-                gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+            # Evaluate validation set if provided
+            val_eval = None
+            if val_samples:
+                print("Evaluating validation set...")
+                val_eval = self._evaluate_samples(val_samples, system_prompt, use_realtime_labels, "Val Eval")
+                epoch_stats["val_eval"] = val_eval
 
-                # Re-compute ability (fresh QA responses)
-                if use_realtime_labels and question and gold_answers:
-                    ability = self._compute_realtime_ability(question, gold_answers)
-                else:
-                    ability = sample.get("ability", "")
-
-                if ability:
-                    eval_stats["by_ability"][ability]["total"] += 1
-
-                # Test judgment
-                if question and ability and self._test_judgment(question, ability, system_prompt):
-                    eval_stats["correct"] += 1
-                    if ability:
-                        eval_stats["by_ability"][ability]["correct"] += 1
-
-                eval_pbar.set_postfix({"correct": eval_stats["correct"]})
-
-            epoch_stats["eval"] = eval_stats
             stats["per_epoch"].append(epoch_stats)
 
             # Print summary
-            accuracy = eval_stats["correct"] / total_samples * 100 if total_samples > 0 else 0
+            train_acc = train_eval["correct"] / total_samples * 100 if total_samples > 0 else 0
             print(f"\n{'='*60}")
             print(f"Epoch {epoch+1} Summary:")
             print(f"{'='*60}")
             print(f"  Training: {epoch_stats['trained']} trained, {epoch_stats['skipped']} skipped")
             if epoch_stats.get("avg_loss"):
                 print(f"  Average loss: {epoch_stats['avg_loss']:.4f}")
-            print(f"  Evaluation accuracy: {eval_stats['correct']}/{total_samples} ({accuracy:.1f}%)")
 
-            print(f"  By ability:")
+            print(f"\n  Train Set Accuracy: {train_eval['correct']}/{total_samples} ({train_acc:.1f}%)")
+            print(f"    By ability:")
             for ability in ["can", "uncertain", "cannot"]:
-                ab_stats = eval_stats["by_ability"][ability]
+                ab_stats = train_eval["by_ability"][ability]
                 if ab_stats["total"] > 0:
                     acc = ab_stats["correct"] / ab_stats["total"] * 100
-                    print(f"    {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
+                    print(f"      {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
 
-            # Early stopping
-            if eval_stats["correct"] >= total_samples:
-                print(f"\nAll samples correct! Stopping early at epoch {epoch+1}")
+            if val_eval:
+                val_acc = val_eval["correct"] / val_eval["total"] * 100 if val_eval["total"] > 0 else 0
+                print(f"\n  Val Set Accuracy: {val_eval['correct']}/{val_eval['total']} ({val_acc:.1f}%)")
+                print(f"    By ability:")
+                for ability in ["can", "uncertain", "cannot"]:
+                    ab_stats = val_eval["by_ability"][ability]
+                    if ab_stats["total"] > 0:
+                        acc = ab_stats["correct"] / ab_stats["total"] * 100
+                        print(f"      {ability}: {ab_stats['correct']}/{ab_stats['total']} ({acc:.1f}%)")
+
+            # Early stopping based on train accuracy
+            if train_eval["correct"] >= total_samples:
+                print(f"\nAll train samples correct! Stopping early at epoch {epoch+1}")
                 break
 
         return stats
