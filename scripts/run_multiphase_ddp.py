@@ -2014,6 +2014,41 @@ def main():
     phase1_model_path = pipeline.get_phase_output_dir("phase1_judgment") / "judgment_v1"
     phase2_model_path = pipeline.get_phase_output_dir("phase2_knowledge") / "knowledge"
 
+    # Print summary for previously completed phases (not in phases_to_run)
+    if is_main_process():
+        completed_phases = [p for p in [1, 2, 3] if p not in phases_to_run and is_phase_completed(p, pipeline)]
+        if completed_phases:
+            print(f"\n{'=' * 60}")
+            print(f"Previously completed phases: {completed_phases}")
+            print(f"{'=' * 60}")
+            for phase in completed_phases:
+                if phase == 1:
+                    phase_output = pipeline.get_phase_output_dir("phase1_judgment")
+                    baseline = load_phase_results(phase_output, "baseline_results.json")
+                    after = load_phase_results(phase_output, "after_train_results.json")
+                    all_results = {**baseline, **after}
+                    print_phase_summary(1, "Initial Judgment Training", all_results, str(phase1_model_path))
+                elif phase == 2:
+                    phase_output = pipeline.get_phase_output_dir("phase2_knowledge")
+                    baseline = load_phase_results(phase_output, "baseline_results.json")
+                    after = load_phase_results(phase_output, "after_train_results.json")
+                    all_results = {**baseline, **after}
+                    print_phase_summary(2, "Knowledge Learning", all_results, str(phase2_model_path))
+                elif phase == 3:
+                    phase_output = pipeline.get_phase_output_dir("phase3_judgment")
+                    results = load_phase_results(phase_output, "eval_results.json")
+                    summary_results = {
+                        'after_train': {
+                            **results.get('judgment_train', {}),
+                            **results.get('qa_train', {}),
+                        },
+                        'after_val': {
+                            **results.get('judgment_val', {}),
+                            **results.get('qa_val', {}),
+                        },
+                    }
+                    print_phase_summary(3, "Update Judgment", summary_results, str(phase_output / "judgment_v2"))
+
     # Track samples across phases
     samples = None
 
