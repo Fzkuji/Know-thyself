@@ -1292,14 +1292,23 @@ def run_phase1_baseline_eval(args, pipeline: MultiPhasePipeline) -> dict:
             args.num_trials, args.inference_batch_size, args.num_gpus
         )
 
-        print("\n[Step 1.3c] Baseline QA accuracy...")
+        print("\n[Step 1.3c] Baseline QA accuracy (train split)...")
+        train_samples = load_triviaqa(split="train", num_samples=args.num_samples)
+        qa_train = test_qa_accuracy(
+            args.model, train_samples[:args.test_samples], args.num_trials,
+            args.inference_batch_size, args.num_gpus
+        )
+        eval_results['before_train'].update(qa_train)
+        print(f"  Baseline QA (train): {qa_train['qa_accuracy']:.1f}%")
+
+        print("\n[Step 1.3d] Baseline QA accuracy (validation split)...")
         val_samples = load_triviaqa(split="validation", num_samples=args.test_samples)
-        qa_before = test_qa_accuracy(
+        qa_val = test_qa_accuracy(
             args.model, val_samples, args.num_trials,
             args.inference_batch_size, args.num_gpus
         )
-        eval_results['before_val'].update(qa_before)
-        print(f"  Baseline QA: {qa_before['qa_accuracy']:.1f}%")
+        eval_results['before_val'].update(qa_val)
+        print(f"  Baseline QA (val): {qa_val['qa_accuracy']:.1f}%")
 
         # Save results
         save_phase_results(phase_output, eval_results, results_file)
