@@ -270,13 +270,13 @@ log "Symlink created: $OUTPUT_DIR/final_model -> epoch_$NUM_EPOCHS"
 
 # Generate summary table (binary version)
 log "Generating summary table (binary)..."
-python3 << 'PYTHON_SCRIPT'
+python3 - "$OUTPUT_DIR" "$NUM_EPOCHS" << 'PYTHON_SCRIPT'
 import json
-import os
+import sys
 from pathlib import Path
 
-output_dir = os.environ.get("OUTPUT_DIR", "experiments/phase1_binary")
-num_epochs = int(os.environ.get("NUM_EPOCHS", "10"))
+output_dir = sys.argv[1] if len(sys.argv) > 1 else "experiments/phase1_binary"
+num_epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 
 # Collect metrics from all epochs
 rows = []
