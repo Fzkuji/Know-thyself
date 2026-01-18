@@ -224,6 +224,8 @@ def main():
     # Output
     parser.add_argument("--output_json", type=str, default=None,
                         help="Path to save metrics JSON (default: auto-generate based on split)")
+    parser.add_argument("--epoch", type=int, default=None,
+                        help="Epoch number (for display purposes)")
 
     args = parser.parse_args()
 
@@ -247,7 +249,8 @@ def main():
     metrics = compute_metrics(results)
 
     print("\n" + "=" * 60)
-    print(f"EVALUATION RESULTS [{args.split.upper()}]")
+    epoch_str = f" - Epoch {args.epoch}" if args.epoch is not None else ""
+    print(f"EVALUATION RESULTS [{args.split.upper()}]{epoch_str}")
     print("=" * 60)
     print(f"Split: {args.split}")
     print(f"Total samples: {metrics['total']}")

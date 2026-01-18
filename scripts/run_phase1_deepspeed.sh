@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --num_trials N         Trials per question (default: 10)"
             echo "  --num_epochs N         Number of epochs (default: 10)"
             echo "  --batch_size N         Inference batch size (default: 16)"
-            echo "  --lr RATE              Learning rate (default: 1e-5)"
+            echo "  --lr RATE              Learning rate (default: 1e-6)"
             echo "  --num_gpus N           Number of GPUs (default: 8)"
             echo "  --output_dir DIR       Output directory"
             echo "  --force                Force re-run all steps"
@@ -94,7 +94,7 @@ FORCE="${FORCE:-0}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
-LR="${LR:-1e-5}"
+LR="${LR:-1e-6}"
 NUM_GPUS="${NUM_GPUS:-8}"
 
 # DeepSpeed config
@@ -141,6 +141,7 @@ if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ] || [ "$FORCE" = "1" ]; then
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --epoch 0 \
         --output_json "$OUTPUT_DIR/epoch_0/metrics_train.json" \
         2>&1 | tee "$OUTPUT_DIR/baseline_train.log"
 
@@ -153,6 +154,7 @@ if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ] || [ "$FORCE" = "1" ]; then
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --epoch 0 \
         --output_json "$OUTPUT_DIR/epoch_0/metrics_validation.json" \
         2>&1 | tee "$OUTPUT_DIR/baseline_val.log"
 
@@ -258,6 +260,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --epoch "$epoch" \
         --output_json "$EPOCH_OUTPUT/metrics_train.json" \
         2>&1 | tee "$EPOCH_OUTPUT/eval_train.log"
 
@@ -270,6 +273,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         --num_trials "$NUM_TRIALS" \
         --inference_batch_size "$BATCH_SIZE" \
         --num_gpus "$NUM_GPUS" \
+        --epoch "$epoch" \
         --output_json "$EPOCH_OUTPUT/metrics_validation.json" \
         2>&1 | tee "$EPOCH_OUTPUT/eval_val.log"
 
