@@ -109,7 +109,9 @@ def main():
 
     if is_main:
         print(f"\n{'='*60}")
+        print(f"{'='*60}")
         print(f"Epoch {args.epoch}: DeepSpeed ZeRO-3 Training")
+        print(f"{'='*60}")
         print(f"{'='*60}")
         print(f"Model: {args.model}")
         print(f"Training data: {args.input}")
