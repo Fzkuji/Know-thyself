@@ -117,6 +117,84 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
+# Clean results file (only key metrics, no noise)
+RESULTS_FILE="$OUTPUT_DIR/results.txt"
+
+# Function to append epoch results to clean results file (binary version: 2x2 matrix)
+append_results() {
+    local epoch=$1
+    local epoch_dir="$OUTPUT_DIR/epoch_$epoch"
+
+    # Read metrics from JSON files
+    python3 - "$epoch_dir" "$epoch" >> "$RESULTS_FILE" << 'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+epoch_dir = Path(sys.argv[1])
+epoch = int(sys.argv[2])
+
+train_json = epoch_dir / "metrics_train.json"
+val_json = epoch_dir / "metrics_validation.json"
+
+print(f"\n{'='*60}")
+print(f"{'='*60}")
+print(f"Epoch {epoch} Results (Binary)")
+print(f"{'='*60}")
+print(f"{'='*60}")
+
+if train_json.exists():
+    with open(train_json) as f:
+        m = json.load(f)
+    print(f"\n[TRAIN]")
+    print(f"  QA Accuracy: {m.get('qa_accuracy', 0)*100:.1f}%")
+    print(f"  Judgment Accuracy: {m.get('exact_match_rate', 0)*100:.1f}%")
+    if 'f1' in m:
+        print(f"  F1 Score: {m.get('f1', 0)*100:.1f}%")
+
+    # 2x2 Confusion matrix (binary)
+    c = m.get("confusion", {})
+    print(f"\n  Confusion Matrix (2x2):")
+    print(f"                    actual_can  actual_cannot")
+    print(f"    predicted_can      {c.get('can_can', 0):5d}         {c.get('can_cannot', 0):5d}")
+    print(f"    predicted_cannot   {c.get('cannot_can', 0):5d}         {c.get('cannot_cannot', 0):5d}")
+
+    pred = m.get("pred_counts", {})
+    actual = m.get("actual_counts", {})
+    print(f"\n  Predicted: can={pred.get('can', 0)}, cannot={pred.get('cannot', 0)}")
+    print(f"  Actual:    can={actual.get('can', 0)}, cannot={actual.get('cannot', 0)}")
+
+if val_json.exists():
+    with open(val_json) as f:
+        m = json.load(f)
+    print(f"\n[VALIDATION]")
+    print(f"  QA Accuracy: {m.get('qa_accuracy', 0)*100:.1f}%")
+    print(f"  Judgment Accuracy: {m.get('exact_match_rate', 0)*100:.1f}%")
+    if 'f1' in m:
+        print(f"  F1 Score: {m.get('f1', 0)*100:.1f}%")
+
+    # 2x2 Confusion matrix (binary)
+    c = m.get("confusion", {})
+    print(f"\n  Confusion Matrix (2x2):")
+    print(f"                    actual_can  actual_cannot")
+    print(f"    predicted_can      {c.get('can_can', 0):5d}         {c.get('can_cannot', 0):5d}")
+    print(f"    predicted_cannot   {c.get('cannot_can', 0):5d}         {c.get('cannot_cannot', 0):5d}")
+
+    pred = m.get("pred_counts", {})
+    actual = m.get("actual_counts", {})
+    print(f"\n  Predicted: can={pred.get('can', 0)}, cannot={pred.get('cannot', 0)}")
+    print(f"  Actual:    can={actual.get('can', 0)}, cannot={actual.get('cannot', 0)}")
+PYEOF
+}
+
+# Initialize clean results file
+echo "Phase 1 Training Results (Binary: can/cannot)" > "$RESULTS_FILE"
+echo "Model: $MODEL" >> "$RESULTS_FILE"
+echo "Training samples: $NUM_SAMPLES, Validation samples: $VAL_SAMPLES" >> "$RESULTS_FILE"
+echo "Learning rate: $LR" >> "$RESULTS_FILE"
+echo "Mode: Binary (can/cannot), temperature=0, single trial" >> "$RESULTS_FILE"
+echo "Started: $(date '+%Y-%m-%d %H:%M:%S')" >> "$RESULTS_FILE"
+
 # ============== Step 0: Baseline Evaluation ==============
 log "Step 0: Baseline evaluation (before any training) - Binary Mode"
 
@@ -149,6 +227,9 @@ if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ] || [ "$FORCE" = "1" ]; then
 else
     log "Baseline evaluation already completed, skipping"
 fi
+
+# Append baseline results to clean results file
+append_results 0
 
 # ============== Step 1: Collect QA Responses ==============
 # For binary mode, we still collect responses but will use single greedy trial during training
@@ -263,6 +344,9 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
         --output_json "$EPOCH_OUTPUT/metrics_validation.json" \
         2>&1 | tee "$EPOCH_OUTPUT/eval_val.log"
 
+    # Append results to clean results file
+    append_results "$epoch"
+
     log "Epoch $epoch evaluation complete"
 done
 
@@ -270,6 +354,7 @@ done
 log "Phase 1 Binary complete!"
 log "Final model: $CURRENT_MODEL"
 log "Results in: $OUTPUT_DIR"
+log "Clean results file: $RESULTS_FILE"
 
 # Create symlink to final model
 ln -sf "epoch_$NUM_EPOCHS" "$OUTPUT_DIR/final_model"
