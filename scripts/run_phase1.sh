@@ -52,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -65,6 +69,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --lr RATE              Learning rate (default: 1e-5)"
             echo "  --num_gpus N           Number of GPUs (default: 8)"
             echo "  --output_dir DIR       Output directory (default: experiments/phase1)"
+            echo "  --force                Force re-run all steps (ignore existing outputs)"
             exit 0
             ;;
         *)
@@ -78,6 +83,7 @@ done
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 NUM_SAMPLES="${NUM_SAMPLES:-500}"
 VAL_SAMPLES="${VAL_SAMPLES:-1000}"  # validation samples
+FORCE="${FORCE:-0}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
@@ -103,6 +109,7 @@ echo "BATCH_SIZE:  $BATCH_SIZE"
 echo "LR:          $LR"
 echo "NUM_GPUS:    $NUM_GPUS"
 echo "OUTPUT_DIR:  $OUTPUT_DIR"
+echo "FORCE:       $FORCE"
 echo "==========================================="
 
 # ============== Helper Functions ==============
@@ -114,7 +121,7 @@ log() {
 log "Step 0: Baseline evaluation (before any training)"
 
 mkdir -p "$OUTPUT_DIR/epoch_0"
-if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ]; then
+if [ ! -f "$OUTPUT_DIR/baseline_eval.json" ] || [ "$FORCE" = "1" ]; then
     # Evaluate on training samples (same samples used for training)
     python scripts/step4_evaluate.py \
         --model "$MODEL" \
@@ -149,7 +156,7 @@ fi
 log "Step 1: Collecting QA responses"
 
 RESPONSES_FILE="$OUTPUT_DIR/responses.jsonl"
-if [ ! -f "$RESPONSES_FILE" ]; then
+if [ ! -f "$RESPONSES_FILE" ] || [ "$FORCE" = "1" ]; then
     if python scripts/step1_collect_responses.py \
         --model "$MODEL" \
         --split train \
@@ -172,7 +179,7 @@ fi
 log "Step 2: Building training data"
 
 TRAINING_DATA="$OUTPUT_DIR/training_data.jsonl"
-if [ ! -f "$TRAINING_DATA" ]; then
+if [ ! -f "$TRAINING_DATA" ] || [ "$FORCE" = "1" ]; then
     if python scripts/step2_build_dataset.py \
         --input "$RESPONSES_FILE" \
         --output "$TRAINING_DATA" \
@@ -199,7 +206,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
     mkdir -p "$EPOCH_OUTPUT"
 
     # Skip if already completed (check for config.json as proof of successful save)
-    if [ -f "$EPOCH_OUTPUT/config.json" ]; then
+    if [ -f "$EPOCH_OUTPUT/config.json" ] && [ "$FORCE" != "1" ]; then
         log "Epoch $epoch already completed, skipping to evaluation"
         CURRENT_MODEL="$EPOCH_OUTPUT"
     else
