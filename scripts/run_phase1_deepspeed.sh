@@ -45,6 +45,10 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
+        --train_batch_size)
+            TRAIN_BATCH_SIZE="$2"
+            shift 2
+            ;;
         --lr)
             LR="$2"
             shift 2
@@ -73,6 +77,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --num_trials N         Trials per question (default: 10)"
             echo "  --num_epochs N         Number of epochs (default: 10)"
             echo "  --batch_size N         Inference batch size (default: 16)"
+            echo "  --train_batch_size N   Training batch size per GPU (default: 4)"
             echo "  --lr RATE              Learning rate (default: 1e-6)"
             echo "  --num_gpus N           Number of GPUs (default: 8)"
             echo "  --output_dir DIR       Output directory"
@@ -94,6 +99,7 @@ FORCE="${FORCE:-0}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-4}"
 LR="${LR:-1e-6}"
 NUM_GPUS="${NUM_GPUS:-8}"
 
@@ -114,7 +120,8 @@ echo "NUM_SAMPLES: $NUM_SAMPLES"
 echo "VAL_SAMPLES: $VAL_SAMPLES"
 echo "NUM_TRIALS:  $NUM_TRIALS"
 echo "NUM_EPOCHS:  $NUM_EPOCHS"
-echo "BATCH_SIZE:  $BATCH_SIZE"
+echo "BATCH_SIZE:  $BATCH_SIZE (inference)"
+echo "TRAIN_BATCH: $TRAIN_BATCH_SIZE (per GPU)"
 echo "LR:          $LR"
 echo "NUM_GPUS:    $NUM_GPUS"
 echo "OUTPUT_DIR:  $OUTPUT_DIR"
@@ -309,6 +316,7 @@ for epoch in $(seq 1 $NUM_EPOCHS); do
             --output_dir "$EPOCH_OUTPUT" \
             --epoch "$epoch" \
             --lr "$LR" \
+            --batch_size "$TRAIN_BATCH_SIZE" \
             --num_trials "$NUM_TRIALS" \
             --deepspeed "$DS_CONFIG" \
             2>&1 | tee "$EPOCH_OUTPUT/train.log"; then

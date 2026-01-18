@@ -100,6 +100,10 @@ def main():
                         help="Local rank for distributed training")
     parser.add_argument("--num_trials", type=int, default=10,
                         help="Number of trials for ability classification (used for pre-computed labels)")
+    parser.add_argument("--batch_size", type=int, default=4,
+                        help="Training batch size per GPU")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
+                        help="Gradient accumulation steps")
     args = parser.parse_args()
 
     # Get world info
@@ -117,6 +121,8 @@ def main():
         print(f"Training data: {args.input}")
         print(f"Output: {args.output_dir}")
         print(f"Learning rate: {args.lr}")
+        print(f"Batch size per GPU: {args.batch_size}")
+        print(f"Gradient accumulation: {args.gradient_accumulation_steps}")
         print(f"World size: {world_size}")
         print(f"DeepSpeed config: {args.deepspeed}")
 
@@ -166,8 +172,8 @@ def main():
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=1,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=1,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.lr,
         weight_decay=0.01,
         warmup_ratio=0.1,
