@@ -247,8 +247,9 @@ def main():
     metrics = compute_metrics(results)
 
     print("\n" + "=" * 60)
-    print("EVALUATION RESULTS")
+    print(f"EVALUATION RESULTS [{args.split.upper()}]")
     print("=" * 60)
+    print(f"Split: {args.split}")
     print(f"Total samples: {metrics['total']}")
 
     # QA Accuracy (how well the model actually answers questions)

@@ -260,8 +260,9 @@ def main():
     metrics = compute_metrics_binary(results)
 
     print("\n" + "=" * 60)
-    print("EVALUATION RESULTS (Binary Classification)")
+    print(f"EVALUATION RESULTS (Binary) [{args.split.upper()}]")
     print("=" * 60)
+    print(f"Split: {args.split}")
     print(f"Total samples: {metrics['total']}")
 
     # QA Accuracy
