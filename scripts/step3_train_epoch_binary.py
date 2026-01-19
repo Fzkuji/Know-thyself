@@ -30,12 +30,60 @@ from transformers import (
     AutoTokenizer,
     Trainer,
     TrainingArguments,
-    DataCollatorForLanguageModeling,
 )
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 from src.dataset_builder import load_from_jsonl
 from src.label_generator import SYSTEM_PROMPT
 from src.evaluator import is_correct
+
+
+@dataclass
+class DataCollatorForCausalLM:
+    """
+    Data collator for causal language modeling that properly pads both
+    input_ids and labels to the same length within a batch.
+    """
+    tokenizer: Any
+    padding: bool = True
+    max_length: int = None
+    pad_to_multiple_of: int = None
+    label_pad_token_id: int = -100
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        # Separate labels from features
+        labels = [feature.pop("labels") for feature in features] if "labels" in features[0] else None
+
+        # Pad input_ids and attention_mask
+        batch = self.tokenizer.pad(
+            features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
+        )
+
+        # Pad labels separately with label_pad_token_id
+        if labels is not None:
+            max_label_length = max(len(l) for l in labels)
+            if self.pad_to_multiple_of is not None:
+                max_label_length = (
+                    (max_label_length + self.pad_to_multiple_of - 1)
+                    // self.pad_to_multiple_of
+                    * self.pad_to_multiple_of
+                )
+
+            padded_labels = []
+            for label in labels:
+                remainder = max_label_length - len(label)
+                # Pad on the right with label_pad_token_id
+                padded_label = list(label) + [self.label_pad_token_id] * remainder
+                padded_labels.append(padded_label)
+
+            batch["labels"] = torch.tensor(padded_labels, dtype=torch.long)
+
+        return batch
 
 
 def classify_ability_binary(correct: bool) -> str:
@@ -425,10 +473,11 @@ def main():
         dataloader_pin_memory=False,
     )
 
-    # Data collator
-    data_collator = DataCollatorForLanguageModeling(
+    # Data collator (custom one that properly pads labels)
+    data_collator = DataCollatorForCausalLM(
         tokenizer=tokenizer,
-        mlm=False,
+        padding=True,
+        label_pad_token_id=-100,
     )
 
     # Trainer
