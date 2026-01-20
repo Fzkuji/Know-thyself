@@ -520,6 +520,7 @@ def main():
         args.model,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
+        device_map="auto",
     )
 
     # Load or collect samples
@@ -576,6 +577,7 @@ def main():
                 current_model_path,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
+                device_map="auto",
             )
 
         # Run training
