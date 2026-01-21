@@ -46,7 +46,7 @@ def run_command(cmd, step_label, desc, model=None, input_file=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct")
-    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory (auto-generated if not specified)")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--num_gpus", type=int, default=8)
     parser.add_argument("--num_samples", type=int, default=5000)
@@ -60,6 +60,14 @@ def main():
     parser.add_argument("--start_epoch", type=int, default=1, help="Start from this epoch")
 
     args = parser.parse_args()
+
+    # Auto-generate output_dir if not specified
+    if args.output_dir is None:
+        from datetime import datetime
+        model_name = args.model.split("/")[-1].lower().replace("-", "_")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        lr_str = f"{args.lr:.0e}".replace("-", "").replace("+", "")
+        args.output_dir = f"experiments/{model_name}_{args.label_mode}_lr{lr_str}_{timestamp}"
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
