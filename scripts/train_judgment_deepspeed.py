@@ -333,45 +333,71 @@ def run_batch_training(args, model, tokenizer, samples, epoch, is_main):
         desc="Tokenizing",
     )
 
-    # Training
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=1,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.lr,
-        weight_decay=0.01,
-        warmup_ratio=0.1,
-        logging_steps=10,
-        save_strategy="no",
-        bf16=True,
-        deepspeed=args.deepspeed,
-        gradient_checkpointing=True,
-        report_to="none",
-        remove_unused_columns=False,
-        dataloader_pin_memory=False,
-    )
+    # Training with automatic OOM recovery
+    current_batch_size = args.batch_size
+    current_grad_accum = args.gradient_accumulation_steps
+    effective_batch_size = current_batch_size * current_grad_accum
 
-    data_collator = DataCollatorForCausalLM(
-        tokenizer=tokenizer,
-        padding=True,
-        label_pad_token_id=-100,
-    )
+    while current_batch_size >= 1:
+        try:
+            training_args = TrainingArguments(
+                output_dir=args.output_dir,
+                num_train_epochs=1,
+                per_device_train_batch_size=current_batch_size,
+                gradient_accumulation_steps=current_grad_accum,
+                learning_rate=args.lr,
+                weight_decay=0.01,
+                warmup_ratio=0.1,
+                logging_steps=10,
+                save_strategy="no",
+                bf16=True,
+                deepspeed=args.deepspeed,
+                gradient_checkpointing=True,
+                report_to="none",
+                remove_unused_columns=False,
+                dataloader_pin_memory=False,
+            )
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_dataset,
-        data_collator=data_collator,
-        processing_class=tokenizer,
-    )
+            data_collator = DataCollatorForCausalLM(
+                tokenizer=tokenizer,
+                padding=True,
+                label_pad_token_id=-100,
+            )
 
-    if is_main:
-        print(f"\nTraining on {len(incorrect_samples)} samples...")
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_dataset,
+                data_collator=data_collator,
+                processing_class=tokenizer,
+            )
 
-    train_result = trainer.train()
+            if is_main:
+                print(f"\nTraining on {len(incorrect_samples)} samples (batch_size={current_batch_size}, grad_accum={current_grad_accum})...")
 
-    return tested_samples, train_result.training_loss
+            train_result = trainer.train()
+            return tested_samples, train_result.training_loss
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "CUDA" in str(e):
+                # Clear memory
+                torch.cuda.empty_cache()
+
+                # Halve batch size, double gradient accumulation to maintain effective batch size
+                new_batch_size = max(1, current_batch_size // 2)
+                if new_batch_size == current_batch_size:
+                    # Already at batch_size=1, cannot reduce further
+                    raise RuntimeError(f"OOM even with batch_size=1. Try gradient_checkpointing or CPU offload.") from e
+
+                current_grad_accum = current_grad_accum * (current_batch_size // new_batch_size)
+                current_batch_size = new_batch_size
+
+                if is_main:
+                    print(f"\n⚠️ OOM detected! Reducing batch_size to {current_batch_size}, grad_accum to {current_grad_accum}")
+            else:
+                raise
+
+    raise RuntimeError("Training failed: could not find working batch size")
 
 
 def run_adaptive_training(args, model, tokenizer, samples, epoch, is_main):
