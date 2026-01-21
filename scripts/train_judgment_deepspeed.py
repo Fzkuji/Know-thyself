@@ -536,9 +536,12 @@ def main():
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     is_main = local_rank in [-1, 0]
 
-    # Initialize distributed for inference phase
+    # Initialize distributed for inference and training sync
     if world_size > 1 and not torch.distributed.is_initialized():
-        torch.distributed.init_process_group(backend="nccl")
+        torch.distributed.init_process_group(
+            backend="nccl",
+            init_method="env://",
+        )
         torch.cuda.set_device(local_rank)
 
     output_dir = Path(args.output_dir)
@@ -731,14 +734,25 @@ def main():
             for rank in range(world_size):
                 (output_dir / f"test_rank{rank}_epoch{epoch}.jsonl").unlink(missing_ok=True)
 
-        # Sync and broadcast tested_samples
+        # Sync and load merged results on all ranks (all ranks must have same data for DDP)
         if world_size > 1:
+            # Save merged results to file
+            if is_main:
+                merged_file = output_dir / f"tested_epoch{epoch}.jsonl"
+                save_to_jsonl(tested_samples, str(merged_file))
+
             torch.distributed.barrier()
+
+            # All ranks load the same merged data
             if not is_main:
-                # Non-main ranks don't need tested_samples for training
-                tested_samples = local_tested
-                for r in tested_samples:
-                    r.pop("_original_idx", None)
+                merged_file = output_dir / f"tested_epoch{epoch}.jsonl"
+                tested_samples = load_from_jsonl(str(merged_file))
+
+            torch.distributed.barrier()
+
+            # Cleanup merged file
+            if is_main:
+                (output_dir / f"tested_epoch{epoch}.jsonl").unlink(missing_ok=True)
 
         # ===== Phase 2: Train with DeepSpeed =====
         if is_main:
