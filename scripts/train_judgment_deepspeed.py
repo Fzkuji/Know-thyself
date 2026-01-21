@@ -528,6 +528,11 @@ def main():
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     is_main = local_rank in [-1, 0]
 
+    # Initialize distributed for inference phase
+    if world_size > 1 and not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -563,15 +568,12 @@ def main():
             print(f"\nLoading TriviaQA {args.split} split...")
         samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
 
-        # Collect responses using all GPUs in parallel
+        # Collect responses using all GPUs in parallel (data parallel inference)
         if is_main:
             print(f"\nCollecting responses ({args.label_mode} mode) with {world_size} GPUs...")
 
         # Each rank loads model on its own GPU
-        if local_rank >= 0:
-            device = f"cuda:{local_rank}"
-        else:
-            device = "cuda:0"
+        device = f"cuda:{local_rank}" if local_rank >= 0 else "cuda:0"
 
         inference_model = AutoModelForCausalLM.from_pretrained(
             args.model,
@@ -588,7 +590,6 @@ def main():
                 show_progress=is_main
             )
         else:
-            # TODO: Add distributed support for uncertainty mode
             local_results = collect_responses_uncertainty(
                 samples, inference_model, tokenizer,
                 num_trials=args.num_trials,
@@ -600,56 +601,48 @@ def main():
         del inference_model
         torch.cuda.empty_cache()
 
+        # Sync all ranks
+        if world_size > 1:
+            torch.distributed.barrier()
+
         # Save local results to per-rank file
         local_responses_file = output_dir / f"responses_rank{max(0, local_rank)}.jsonl"
         save_to_jsonl(local_results, str(local_responses_file))
 
-        # Simple sync: wait for all ranks to finish
+        # Sync again after saving
         if world_size > 1:
-            import time
-            # Create a done marker file
-            done_file = output_dir / f".done_rank{max(0, local_rank)}"
-            done_file.touch()
+            torch.distributed.barrier()
 
-            # Wait for all ranks to be done
+        # Only main process merges results
+        if is_main:
+            all_results = []
             for rank in range(world_size):
-                other_done = output_dir / f".done_rank{rank}"
-                while not other_done.exists():
-                    time.sleep(0.5)
+                rank_file = output_dir / f"responses_rank{rank}.jsonl"
+                rank_results = load_from_jsonl(str(rank_file))
+                all_results.extend(rank_results)
 
-            # Only main process merges results
-            if is_main:
-                all_results = []
-                for rank in range(world_size):
-                    rank_file = output_dir / f"responses_rank{rank}.jsonl"
-                    rank_results = load_from_jsonl(str(rank_file))
-                    all_results.extend(rank_results)
+            # Sort by original index to restore order
+            all_results.sort(key=lambda x: x.get("_original_idx", 0))
+            # Remove temporary field
+            for r in all_results:
+                r.pop("_original_idx", None)
 
-                # Sort by original index to restore order
-                all_results.sort(key=lambda x: x.get("_original_idx", 0))
-                # Remove temporary field
-                for r in all_results:
-                    r.pop("_original_idx", None)
+            samples = all_results
 
-                samples = all_results
+            # Save merged results
+            responses_file = output_dir / "responses.jsonl"
+            save_to_jsonl(samples, str(responses_file))
+            print(f"Saved merged responses to {responses_file}")
 
-                # Save merged results
+            # Cleanup temp files
+            for rank in range(world_size):
+                (output_dir / f"responses_rank{rank}.jsonl").unlink(missing_ok=True)
+
+        # Sync and load merged results on all ranks
+        if world_size > 1:
+            torch.distributed.barrier()
+            if not is_main:
                 responses_file = output_dir / "responses.jsonl"
-                save_to_jsonl(samples, str(responses_file))
-                print(f"Saved merged responses to {responses_file}")
-
-                # Cleanup temp files
-                for rank in range(world_size):
-                    (output_dir / f"responses_rank{rank}.jsonl").unlink(missing_ok=True)
-                    (output_dir / f".done_rank{rank}").unlink(missing_ok=True)
-
-            # Other ranks load merged results
-            else:
-                time.sleep(1)  # Wait for main to merge
-                responses_file = output_dir / "responses.jsonl"
-                while not responses_file.exists():
-                    time.sleep(0.5)
-                time.sleep(1)  # Ensure file is fully written
                 samples = load_from_jsonl(str(responses_file))
         else:
             samples = local_results
