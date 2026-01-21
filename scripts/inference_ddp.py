@@ -269,6 +269,8 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
     parse_fn = parse_judgment_binary if label_mode == "binary" else parse_judgment_uncertainty
 
     # Get token IDs for yes/no (for probability computation)
+    # The model outputs "\boxed{yes}" or "\boxed{no}", so we need to find the
+    # probability at the position where yes/no appears (after "\boxed{")
     yes_token_id = tokenizer.encode("yes", add_special_tokens=False)[-1]
     no_token_id = tokenizer.encode("no", add_special_tokens=False)[-1]
 
@@ -297,36 +299,42 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
         ).to(model.device)
 
         with torch.no_grad():
-            # First, get logits for the first generated token to compute confidence
-            model_outputs = model(**inputs)
-            logits = model_outputs.logits  # [batch_size, seq_len, vocab_size]
-
-            # Compute yes probability for each sample
-            batch_probs = []
-            for j in range(len(batch)):
-                # Find the last non-padding position
-                attention_mask = inputs["attention_mask"][j]
-                last_pos = attention_mask.sum() - 1
-
-                # Get logits at last position (predicts first output token)
-                next_token_logits = logits[j, last_pos, :]
-
-                # Compute softmax probability for yes vs no
-                yes_no_logits = torch.tensor([
-                    next_token_logits[yes_token_id].item(),
-                    next_token_logits[no_token_id].item()
-                ])
-                yes_no_probs = torch.softmax(yes_no_logits, dim=0)
-                yes_prob = yes_no_probs[0].item()
-                batch_probs.append(yes_prob)
-
-            # Generate full response for parsing
-            outputs = model.generate(
+            # Generate with output_scores to get logits at each generation step
+            gen_outputs = model.generate(
                 **inputs,
                 max_new_tokens=32,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
+                output_scores=True,
+                return_dict_in_generate=True,
             )
+
+            outputs = gen_outputs.sequences
+            scores = gen_outputs.scores  # tuple of (batch_size, vocab_size) for each step
+
+            # Compute yes probability for each sample
+            # Find the position where yes/no token appears in each generated sequence
+            batch_probs = []
+            for j in range(len(batch)):
+                input_len = inputs["input_ids"][j].shape[0]
+                generated_ids = outputs[j, input_len:].tolist()
+
+                # Find the position where yes or no token first appears
+                yes_prob = 0.5  # default
+                for step_idx, token_id in enumerate(generated_ids):
+                    if token_id == yes_token_id or token_id == no_token_id:
+                        # Get logits at this step
+                        step_logits = scores[step_idx][j]
+                        # Compute softmax probability for yes vs no
+                        yes_no_logits = torch.tensor([
+                            step_logits[yes_token_id].item(),
+                            step_logits[no_token_id].item()
+                        ])
+                        yes_no_probs = torch.softmax(yes_no_logits, dim=0)
+                        yes_prob = yes_no_probs[0].item()
+                        break
+
+                batch_probs.append(yes_prob)
 
         for j, (sample, output) in enumerate(zip(batch, outputs)):
             input_len = inputs["input_ids"][j].shape[0]
