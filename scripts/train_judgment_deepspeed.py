@@ -507,21 +507,11 @@ def main():
             print(f"Num trials: {args.num_trials}")
             print(f"Temperature: {args.temperature}")
 
-    # Load model and tokenizer
-    if is_main:
-        print(f"\nLoading model...")
-
+    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        device_map="auto",
-    )
 
     # Load or collect samples
     if args.input:
@@ -533,25 +523,47 @@ def main():
             print(f"\nLoading TriviaQA {args.split} split...")
         samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
 
-        # Collect responses to determine ability labels
+        # Collect responses on rank 0 only (with device_map='auto' for GPU inference)
         if is_main:
             print(f"\nCollecting responses ({args.label_mode} mode)...")
-
-        if args.label_mode == "binary":
-            samples = collect_responses_binary(samples, model, tokenizer, batch_size=args.batch_size)
-        else:
-            samples = collect_responses_uncertainty(
-                samples, model, tokenizer,
-                num_trials=args.num_trials,
-                batch_size=args.batch_size,
-                temperature=args.temperature
+            # Load model with device_map='auto' for fast inference
+            inference_model = AutoModelForCausalLM.from_pretrained(
+                args.model,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                device_map="auto",
             )
 
-        # Save collected samples
-        responses_file = output_dir / "responses.jsonl"
-        save_to_jsonl(samples, str(responses_file))
-        if is_main:
+            if args.label_mode == "binary":
+                samples = collect_responses_binary(samples, inference_model, tokenizer, batch_size=args.batch_size)
+            else:
+                samples = collect_responses_uncertainty(
+                    samples, inference_model, tokenizer,
+                    num_trials=args.num_trials,
+                    batch_size=args.batch_size,
+                    temperature=args.temperature
+                )
+
+            # Free inference model memory
+            del inference_model
+            torch.cuda.empty_cache()
+
+            # Save collected samples
+            responses_file = output_dir / "responses.jsonl"
+            save_to_jsonl(samples, str(responses_file))
             print(f"Saved responses to {responses_file}")
+
+        # Broadcast samples to all ranks
+        if world_size > 1:
+            import torch.distributed as dist
+            if is_main:
+                # Main process broadcasts the samples file path
+                dist.barrier()
+            else:
+                dist.barrier()
+                # Other ranks load from saved file
+                responses_file = output_dir / "responses.jsonl"
+                samples = load_from_jsonl(str(responses_file))
 
     # Print ability distribution
     if is_main:
@@ -568,17 +580,14 @@ def main():
     current_model_path = args.model
 
     for epoch in range(1, args.epochs + 1):
-        if epoch > 1:
-            # Reload model from previous epoch
-            current_model_path = str(output_dir / f"epoch_{epoch-1}")
-            if is_main:
-                print(f"\nReloading model from {current_model_path}...")
-            model = AutoModelForCausalLM.from_pretrained(
-                current_model_path,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                device_map="auto",
-            )
+        # Load model for training (no device_map for DeepSpeed compatibility)
+        if is_main:
+            print(f"\nLoading model from {current_model_path} for epoch {epoch}...")
+        model = AutoModelForCausalLM.from_pretrained(
+            current_model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        )
 
         # Run training
         if args.training_mode == "batch":
@@ -603,6 +612,12 @@ def main():
         trainer = Trainer(model=model, args=training_args)
         trainer.save_model(str(epoch_dir))
         tokenizer.save_pretrained(str(epoch_dir))
+
+        # Update model path for next epoch and free memory
+        current_model_path = str(epoch_dir)
+        del model
+        del trainer
+        torch.cuda.empty_cache()
 
         # Save stats
         stats = {
