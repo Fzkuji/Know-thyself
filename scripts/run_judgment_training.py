@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -191,10 +192,63 @@ def main():
         ]
         run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy", model=current_model)
 
+    # Print summary
+    print_summary(output_dir, args.epochs, args.skip_qa_eval)
+
+
+def print_summary(output_dir: Path, epochs: int, skip_qa_eval: bool):
+    """Print summary of all epochs."""
     print(f"\n{'#'*60}")
-    print("Training Complete!")
+    print("Training Complete - Summary")
     print(f"{'#'*60}")
-    print(f"Final model: {current_model}")
+
+    # Collect results from all epochs
+    results = []
+    for epoch in range(0, epochs + 1):
+        epoch_result = {"epoch": epoch}
+
+        # Read judgment accuracy
+        judgment_file = output_dir / f"tested_epoch{epoch}.jsonl"
+        if judgment_file.exists():
+            with open(judgment_file) as f:
+                samples = [json.loads(line) for line in f]
+            correct = sum(1 for s in samples if s.get("judgment_correct", False))
+            epoch_result["judgment_acc"] = correct / len(samples) * 100 if samples else 0
+            epoch_result["judgment_total"] = len(samples)
+
+        # Read QA accuracy
+        if not skip_qa_eval:
+            qa_file = output_dir / f"eval_qa_epoch{epoch}.jsonl"
+            if qa_file.exists():
+                with open(qa_file) as f:
+                    samples = [json.loads(line) for line in f]
+                correct = sum(1 for s in samples if s.get("correct", False))
+                epoch_result["qa_acc"] = correct / len(samples) * 100 if samples else 0
+
+        results.append(epoch_result)
+
+    # Print table
+    print(f"\n{'Epoch':<8} {'Judgment Acc':<15} {'QA Acc':<12}")
+    print("-" * 40)
+
+    for r in results:
+        epoch_str = f"{r['epoch']}"
+        judgment_str = f"{r.get('judgment_acc', 0):.1f}%" if "judgment_acc" in r else "N/A"
+        qa_str = f"{r.get('qa_acc', 0):.1f}%" if "qa_acc" in r else "N/A"
+        print(f"{epoch_str:<8} {judgment_str:<15} {qa_str:<12}")
+
+    # Print improvement
+    if len(results) >= 2 and "judgment_acc" in results[0] and "judgment_acc" in results[-1]:
+        judgment_diff = results[-1]["judgment_acc"] - results[0]["judgment_acc"]
+        diff_str = f"+{judgment_diff:.1f}%" if judgment_diff >= 0 else f"{judgment_diff:.1f}%"
+        print(f"\nJudgment improvement: {diff_str} (epoch 0 → epoch {epochs})")
+
+    if not skip_qa_eval and len(results) >= 2 and "qa_acc" in results[0] and "qa_acc" in results[-1]:
+        qa_diff = results[-1]["qa_acc"] - results[0]["qa_acc"]
+        diff_str = f"+{qa_diff:.1f}%" if qa_diff >= 0 else f"{qa_diff:.1f}%"
+        print(f"QA improvement: {diff_str} (epoch 0 → epoch {epochs})")
+
+    print(f"\nFinal model: {output_dir / f'epoch_{epochs}'}")
 
 
 if __name__ == "__main__":
