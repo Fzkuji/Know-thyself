@@ -4,9 +4,11 @@ Main script to run judgment training pipeline.
 
 Orchestrates:
 1. Collect responses (data parallel inference)
-2. For each epoch:
+2. Evaluate baseline QA accuracy (before training)
+3. For each epoch:
    a. Test judgments (data parallel inference)
-   b. Train on incorrect judgments (DeepSpeed ZeRO-3)
+   b. Train on samples (DeepSpeed ZeRO-3)
+   c. Evaluate QA accuracy (monitor for degradation)
 
 Usage:
     python scripts/run_judgment_training.py \
@@ -53,6 +55,7 @@ def main():
     # Resume options
     parser.add_argument("--skip_collect", action="store_true", help="Skip response collection (use existing)")
     parser.add_argument("--start_epoch", type=int, default=1, help="Start from this epoch")
+    parser.add_argument("--skip_qa_eval", action="store_true", help="Skip QA accuracy evaluation")
 
     args = parser.parse_args()
 
@@ -86,6 +89,20 @@ def main():
     else:
         print(f"\nSkipping response collection (using {responses_file})")
 
+    # Step 2: Evaluate baseline QA accuracy (before training)
+    if not args.skip_qa_eval and args.start_epoch == 1:
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "eval_qa",
+            "--model", args.model,
+            "--input", str(responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", "eval_qa_epoch0.jsonl",
+        ]
+        run_command(cmd, "Evaluate baseline QA accuracy (epoch 0)")
+
     # Training loop
     current_model = args.model
 
@@ -97,7 +114,7 @@ def main():
         tested_file = output_dir / f"tested_epoch{epoch}.jsonl"
         epoch_dir = output_dir / f"epoch_{epoch}"
 
-        # Step 2a: Test judgments
+        # Step 3a: Test judgments
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
             str(scripts_dir / "inference_ddp.py"),
@@ -110,7 +127,7 @@ def main():
         ]
         run_command(cmd, f"Test judgments (epoch {epoch})")
 
-        # Step 2b: Train on all samples (prevents forgetting correct judgments)
+        # Step 3b: Train on all samples (prevents forgetting correct judgments)
         cmd = [
             "deepspeed", f"--num_gpus={args.num_gpus}",
             str(scripts_dir / "train_deepspeed.py"),
@@ -129,6 +146,20 @@ def main():
         # Cleanup tested file
         if tested_file.exists():
             tested_file.unlink()
+
+        # Step 3c: Evaluate QA accuracy after training
+        if not args.skip_qa_eval:
+            cmd = [
+                "torchrun", f"--nproc_per_node={args.num_gpus}",
+                str(scripts_dir / "inference_ddp.py"),
+                "--mode", "eval_qa",
+                "--model", current_model,
+                "--input", str(responses_file),
+                "--output_dir", str(output_dir),
+                "--batch_size", str(args.batch_size),
+                "--output_file", f"eval_qa_epoch{epoch}.jsonl",
+            ]
+            run_command(cmd, f"Evaluate QA accuracy (epoch {epoch})")
 
     print(f"\n{'#'*60}")
     print("Training Complete!")

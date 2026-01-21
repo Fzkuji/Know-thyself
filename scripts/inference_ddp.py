@@ -158,6 +158,64 @@ def collect_responses_uncertainty(samples, model, tokenizer, num_trials=10, batc
     return results
 
 
+def eval_qa_accuracy(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
+                     local_rank=0, world_size=1, show_progress=True):
+    """Evaluate model's QA accuracy on given samples."""
+    # Shard data across ranks
+    shard_size = (len(samples) + world_size - 1) // world_size
+    start_idx = local_rank * shard_size
+    end_idx = min(start_idx + shard_size, len(samples))
+    local_samples = samples[start_idx:end_idx]
+
+    results = []
+    model.eval()
+
+    iterator = range(0, len(local_samples), batch_size)
+    if show_progress:
+        iterator = tqdm(iterator, desc=f"Rank {local_rank} evaluating QA")
+
+    for i in iterator:
+        batch = local_samples[i:i + batch_size]
+        prompts = [format_question_prompt(s["question"]) for s in batch]
+
+        formatted_prompts = []
+        for prompt in prompts:
+            messages = [{"role": "user", "content": prompt}]
+            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            formatted_prompts.append(formatted)
+
+        inputs = tokenizer(
+            formatted_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=2048,
+        ).to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        for j, (sample, output) in enumerate(zip(batch, outputs)):
+            input_len = inputs["input_ids"][j].shape[0]
+            response = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip()
+
+            gold_answers = sample.get("normalized_answers", sample.get("answers", []))
+            correct = is_correct(response, gold_answers)
+
+            result = sample.copy()
+            result["eval_response"] = response
+            result["eval_correct"] = correct
+            result["_original_idx"] = start_idx + i + j
+            results.append(result)
+
+    return results
+
+
 def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
                            local_rank=0, world_size=1, show_progress=True):
     """Test model's judgment accuracy."""
@@ -245,8 +303,8 @@ def merge_results(output_dir, world_size, prefix):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, required=True, choices=["collect", "test"],
-                        help="Mode: collect (responses) or test (judgments)")
+    parser.add_argument("--mode", type=str, required=True, choices=["collect", "test", "eval_qa"],
+                        help="Mode: collect (responses), test (judgments), or eval_qa (QA accuracy)")
     parser.add_argument("--model", type=str, required=True, help="Model path")
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
 
@@ -339,7 +397,7 @@ def main():
         prefix = "responses"
         default_output = "responses.jsonl"
 
-    else:  # test
+    elif args.mode == "test":
         if is_main:
             print(f"\nTesting judgment accuracy...")
 
@@ -352,6 +410,20 @@ def main():
         )
         prefix = "tested"
         default_output = "tested.jsonl"
+
+    else:  # eval_qa
+        if is_main:
+            print(f"\nEvaluating QA accuracy...")
+
+        local_results = eval_qa_accuracy(
+            samples, model, tokenizer,
+            batch_size=args.batch_size,
+            local_rank=local_rank,
+            world_size=world_size,
+            show_progress=is_main
+        )
+        prefix = "eval_qa"
+        default_output = "eval_qa.jsonl"
 
     # Free model memory
     del model
@@ -382,7 +454,8 @@ def main():
             print(f"\nAbility distribution:")
             for ability, count in sorted(ability_counts.items()):
                 print(f"  {ability}: {count} ({count/len(all_results)*100:.1f}%)")
-        else:
+
+        elif args.mode == "test":
             correct = sum(1 for r in all_results if r["judgment_correct"])
             print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
 
@@ -422,6 +495,10 @@ def main():
                     print(f"{gt:15} {row_str}  (n={total})")
 
             print("-" * (15 + len(header) + 10))
+
+        else:  # eval_qa
+            correct = sum(1 for r in all_results if r["eval_correct"])
+            print(f"\nQA accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
 
     # Cleanup
     if world_size > 1:
