@@ -380,19 +380,32 @@ def main():
             for r in all_results:
                 ability_counts[r["ability"]] = ability_counts.get(r["ability"], 0) + 1
             print(f"\nAbility distribution:")
-            for ability, count in ability_counts.items():
+            for ability, count in sorted(ability_counts.items()):
                 print(f"  {ability}: {count} ({count/len(all_results)*100:.1f}%)")
         else:
             correct = sum(1 for r in all_results if r["judgment_correct"])
             print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
 
+            # Determine abilities based on actual data
+            actual_abilities = set()
+            for r in all_results:
+                actual_abilities.add(r["ability"])
+                actual_abilities.add(r["predicted_judgment"])
+
+            # Use appropriate ability set
+            if "uncertain" in actual_abilities:
+                abilities = ["can", "uncertain", "cannot"]
+            else:
+                abilities = ["can", "cannot"]
+
             # Print confusion matrix
             print(f"\nConfusion Matrix:")
-            print(f"{'':15} {'Predicted':^30}")
-            print(f"{'Ground Truth':15} {'can':>10} {'cannot':>10} {'uncertain':>10}")
-            print("-" * 55)
+            col_width = 10
+            header = "".join(f"{a:>{col_width}}" for a in abilities)
+            print(f"{'':15} {'Predicted':^{len(header)}}")
+            print(f"{'Ground Truth':15} {header}")
+            print("-" * (15 + len(header) + 10))
 
-            abilities = ["can", "cannot", "uncertain"]
             matrix = {gt: {pred: 0 for pred in abilities} for gt in abilities}
 
             for r in all_results:
@@ -405,9 +418,10 @@ def main():
                 row = matrix[gt]
                 total = sum(row.values())
                 if total > 0:
-                    print(f"{gt:15} {row['can']:>10} {row['cannot']:>10} {row['uncertain']:>10}  (n={total})")
+                    row_str = "".join(f"{row[pred]:>{col_width}}" for pred in abilities)
+                    print(f"{gt:15} {row_str}  (n={total})")
 
-            print("-" * 55)
+            print("-" * (15 + len(header) + 10))
 
     # Cleanup
     if world_size > 1:
