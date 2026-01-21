@@ -114,8 +114,8 @@ def main():
     parser.add_argument("--local_rank", type=int, default=-1)
 
     # Filter options
-    parser.add_argument("--train_all", action="store_true",
-                        help="Train on all samples (default: only incorrect judgments)")
+    parser.add_argument("--only_incorrect", action="store_true",
+                        help="Only train on incorrect judgments (default: train on all samples)")
 
     args = parser.parse_args()
 
@@ -145,17 +145,21 @@ def main():
         print(f"Loaded {len(samples)} samples")
 
     # Filter samples
-    if args.train_all:
-        train_samples = samples
-    else:
+    if args.only_incorrect:
         # Only train on incorrect judgments
         train_samples = [s for s in samples if not s.get("judgment_correct", True)]
+    else:
+        # Train on all samples (to prevent forgetting)
+        train_samples = samples
 
     if is_main:
-        if not args.train_all:
-            correct = len(samples) - len(train_samples)
-            print(f"Judgment accuracy: {correct}/{len(samples)} ({correct/len(samples)*100:.1f}%)")
-        print(f"Samples to train: {len(train_samples)}")
+        correct = sum(1 for s in samples if s.get("judgment_correct", False))
+        incorrect = len(samples) - correct
+        print(f"Judgment accuracy: {correct}/{len(samples)} ({correct/len(samples)*100:.1f}%)")
+        if args.only_incorrect:
+            print(f"Training on: {len(train_samples)} incorrect samples only")
+        else:
+            print(f"Training on: {len(train_samples)} samples (all, to prevent forgetting)")
 
     if len(train_samples) == 0:
         if is_main:

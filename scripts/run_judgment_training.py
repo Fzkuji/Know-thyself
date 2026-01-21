@@ -110,7 +110,7 @@ def main():
         ]
         run_command(cmd, f"Test judgments (epoch {epoch})")
 
-        # Step 2b: Train on incorrect judgments
+        # Step 2b: Train on all samples (prevents forgetting correct judgments)
         cmd = [
             "deepspeed", f"--num_gpus={args.num_gpus}",
             str(scripts_dir / "train_deepspeed.py"),
