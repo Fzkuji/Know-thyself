@@ -264,12 +264,25 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
             input_len = inputs["input_ids"][j].shape[0]
             response = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip().lower()
 
-            if "\\boxed{yes}" in response or "boxed{yes}" in response:
+            # Parse judgment from response
+            if "\\boxed{yes}" in response or "boxed{yes}" in response or response.strip() == "yes":
                 predicted = "can"
-            elif "\\boxed{uncertain}" in response or "boxed{uncertain}" in response:
+            elif "\\boxed{uncertain}" in response or "boxed{uncertain}" in response or response.strip() == "uncertain":
                 predicted = "uncertain"
-            else:
+            elif "\\boxed{no}" in response or "boxed{no}" in response or response.strip() == "no":
                 predicted = "cannot"
+            else:
+                # Try to infer from response content
+                if "yes" in response and "no" not in response:
+                    predicted = "can"
+                elif "no" in response or "cannot" in response or "don't know" in response:
+                    predicted = "cannot"
+                else:
+                    predicted = "cannot"  # Default to cannot if unclear
+
+            # Debug: print first few responses to see format
+            if local_rank == 0 and i == 0 and j < 3:
+                print(f"[DEBUG] Response: {response[:100]}... -> {predicted}")
 
             ground_truth = sample["ability"]
             judgment_correct = (predicted == ground_truth)
