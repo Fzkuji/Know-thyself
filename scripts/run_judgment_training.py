@@ -58,7 +58,6 @@ def main():
     # Resume options
     parser.add_argument("--skip_collect", action="store_true", help="Skip response collection (use existing)")
     parser.add_argument("--start_epoch", type=int, default=1, help="Start from this epoch")
-    parser.add_argument("--skip_qa_eval", action="store_true", help="Skip QA accuracy evaluation")
 
     args = parser.parse_args()
 
@@ -149,41 +148,41 @@ def main():
         if epoch > 1 and tested_file.exists():
             tested_file.unlink()
 
-        # Step N.2: Evaluate judgment accuracy after training
+        # Step N.2: Evaluate QA accuracy after training (get new ground truth)
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "collect",
+            "--model", current_model,
+            "--input", str(responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", f"responses_epoch{epoch}.jsonl",
+            "--label_mode", args.label_mode,
+        ]
+        run_command(cmd, f"{epoch}.2", "Evaluate SFT QA accuracy", model=current_model)
+
+        # Step N.3: Evaluate judgment accuracy after training
+        responses_epoch_file = output_dir / f"responses_epoch{epoch}.jsonl"
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
             str(scripts_dir / "inference_ddp.py"),
             "--mode", "test",
             "--model", current_model,
-            "--input", str(responses_file),
+            "--input", str(responses_epoch_file),
             "--output_dir", str(output_dir),
             "--batch_size", str(args.batch_size),
             "--output_file", f"tested_epoch{epoch}.jsonl",
             "--label_mode", args.label_mode,
             "--baseline", str(baseline_judgment_file),
         ]
-        run_command(cmd, f"{epoch}.2", "Evaluate judgment accuracy", model=current_model)
-
-        # Step N.3: Evaluate QA accuracy after training (detect degradation)
-        if not args.skip_qa_eval:
-            cmd = [
-                "torchrun", f"--nproc_per_node={args.num_gpus}",
-                str(scripts_dir / "inference_ddp.py"),
-                "--mode", "eval_qa",
-                "--model", current_model,
-                "--input", str(responses_file),
-                "--output_dir", str(output_dir),
-                "--batch_size", str(args.batch_size),
-                "--output_file", f"eval_qa_epoch{epoch}.jsonl",
-                "--baseline", str(baseline_qa_file),
-            ]
-            run_command(cmd, f"{epoch}.3", "Evaluate QA accuracy (detect degradation)", model=current_model)
+        run_command(cmd, f"{epoch}.3", "Evaluate SFT judgment accuracy", model=current_model)
 
     # Print summary
-    print_summary(output_dir, args.epochs, args.skip_qa_eval)
+    print_summary(output_dir, args.epochs)
 
 
-def print_summary(output_dir: Path, epochs: int, skip_qa_eval: bool):
+def print_summary(output_dir: Path, epochs: int):
     """Print summary of all epochs."""
     print(f"\n{'#'*60}")
     print("Training Complete - Summary")
@@ -194,7 +193,7 @@ def print_summary(output_dir: Path, epochs: int, skip_qa_eval: bool):
     for epoch in range(0, epochs + 1):
         epoch_result = {"epoch": epoch}
 
-        # Read judgment accuracy
+        # Read judgment accuracy from tested_epochN.jsonl
         judgment_file = output_dir / f"tested_epoch{epoch}.jsonl"
         if judgment_file.exists():
             with open(judgment_file) as f:
@@ -203,14 +202,17 @@ def print_summary(output_dir: Path, epochs: int, skip_qa_eval: bool):
             epoch_result["judgment_acc"] = correct / len(samples) * 100 if samples else 0
             epoch_result["judgment_total"] = len(samples)
 
-        # Read QA accuracy
-        if not skip_qa_eval:
-            qa_file = output_dir / f"eval_qa_epoch{epoch}.jsonl"
-            if qa_file.exists():
-                with open(qa_file) as f:
-                    samples = [json.loads(line) for line in f]
-                correct = sum(1 for s in samples if s.get("correct", False))
-                epoch_result["qa_acc"] = correct / len(samples) * 100 if samples else 0
+        # Read QA accuracy from responses.jsonl (epoch 0) or responses_epochN.jsonl (epoch N)
+        if epoch == 0:
+            qa_file = output_dir / "responses.jsonl"
+        else:
+            qa_file = output_dir / f"responses_epoch{epoch}.jsonl"
+        if qa_file.exists():
+            with open(qa_file) as f:
+                samples = [json.loads(line) for line in f]
+            # ability == "can" means correct
+            correct = sum(1 for s in samples if s.get("ability") == "can")
+            epoch_result["qa_acc"] = correct / len(samples) * 100 if samples else 0
 
         results.append(epoch_result)
 
@@ -230,10 +232,10 @@ def print_summary(output_dir: Path, epochs: int, skip_qa_eval: bool):
         diff_str = f"+{judgment_diff:.1f}%" if judgment_diff >= 0 else f"{judgment_diff:.1f}%"
         print(f"\nJudgment improvement: {diff_str} (epoch 0 → epoch {epochs})")
 
-    if not skip_qa_eval and len(results) >= 2 and "qa_acc" in results[0] and "qa_acc" in results[-1]:
+    if len(results) >= 2 and "qa_acc" in results[0] and "qa_acc" in results[-1]:
         qa_diff = results[-1]["qa_acc"] - results[0]["qa_acc"]
         diff_str = f"+{qa_diff:.1f}%" if qa_diff >= 0 else f"{qa_diff:.1f}%"
-        print(f"QA improvement: {diff_str} (epoch 0 → epoch {epochs})")
+        print(f"QA change: {diff_str} (epoch 0 → epoch {epochs})")
 
     print(f"\nFinal model: {output_dir / f'epoch_{epochs}'}")
 
