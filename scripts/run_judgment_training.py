@@ -119,6 +119,10 @@ def main():
         ]
         run_command(cmd, "0.3", "Evaluate pretrained judgment accuracy")
 
+    # Baseline files for comparison
+    baseline_qa_file = output_dir / "eval_qa_epoch0.jsonl"
+    baseline_judgment_file = output_dir / "tested_epoch0.jsonl"
+
     # Training loop
     current_model = args.model
 
@@ -127,14 +131,14 @@ def main():
         print(f"Epoch {epoch}/{args.epochs}")
         print(f"{'#'*60}")
 
-        # Use previous epoch's tested file for training
+        # Current epoch's tested file (from previous evaluation)
         if epoch == 1:
             tested_file = output_dir / "tested_epoch0.jsonl"
         else:
             tested_file = output_dir / f"tested_epoch{epoch-1}.jsonl"
         epoch_dir = output_dir / f"epoch_{epoch}"
 
-        # Step N.1: Train on samples
+        # Step N.1: Train on current tested samples
         cmd = [
             "deepspeed", f"--num_gpus={args.num_gpus}",
             str(scripts_dir / "train_deepspeed.py"),
@@ -166,6 +170,7 @@ def main():
                 "--output_dir", str(output_dir),
                 "--batch_size", str(args.batch_size),
                 "--output_file", f"eval_qa_epoch{epoch}.jsonl",
+                "--baseline", str(baseline_qa_file),
             ]
             run_command(cmd, f"{epoch}.2", "Evaluate QA accuracy")
 
@@ -180,6 +185,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--output_file", f"tested_epoch{epoch}.jsonl",
             "--label_mode", args.label_mode,
+            "--baseline", str(baseline_judgment_file),
         ]
         run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy")
 

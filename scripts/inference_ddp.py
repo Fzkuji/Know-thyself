@@ -359,6 +359,7 @@ def main():
     # Common options
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--output_file", type=str, default=None, help="Output filename (default: auto)")
+    parser.add_argument("--baseline", type=str, default=None, help="Baseline file for comparison (epoch 0)")
 
     args = parser.parse_args()
 
@@ -496,7 +497,21 @@ def main():
 
         elif args.mode == "test":
             correct = sum(1 for r in all_results if r["judgment_correct"])
-            print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
+            current_acc = correct / len(all_results) * 100
+
+            # Load baseline for comparison
+            baseline_acc = None
+            if args.baseline and Path(args.baseline).exists():
+                baseline_results = load_from_jsonl(args.baseline)
+                baseline_correct = sum(1 for r in baseline_results if r["judgment_correct"])
+                baseline_acc = baseline_correct / len(baseline_results) * 100
+
+            if baseline_acc is not None:
+                diff = current_acc - baseline_acc
+                diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)  [baseline: {baseline_acc:.1f}%, diff: {diff_str}]")
+            else:
+                print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)")
 
             # Determine abilities based on actual data
             actual_abilities = set()
@@ -537,7 +552,21 @@ def main():
 
         else:  # eval_qa
             correct = sum(1 for r in all_results if r["eval_correct"])
-            print(f"\nQA accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
+            current_acc = correct / len(all_results) * 100
+
+            # Load baseline for comparison
+            baseline_acc = None
+            if args.baseline and Path(args.baseline).exists():
+                baseline_results = load_from_jsonl(args.baseline)
+                baseline_correct = sum(1 for r in baseline_results if r["eval_correct"])
+                baseline_acc = baseline_correct / len(baseline_results) * 100
+
+            if baseline_acc is not None:
+                diff = current_acc - baseline_acc
+                diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                print(f"\nQA accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)  [baseline: {baseline_acc:.1f}%, diff: {diff_str}]")
+            else:
+                print(f"\nQA accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)")
 
     # Cleanup
     if world_size > 1:
