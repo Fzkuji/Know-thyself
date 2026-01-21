@@ -24,17 +24,17 @@ import sys
 from pathlib import Path
 
 
-def run_command(cmd, desc):
+def run_command(cmd, step_label, desc):
     """Run a command and handle errors."""
     print(f"\n{'='*60}")
-    print(f"Running: {desc}")
+    print(f"[{step_label}] {desc}")
     print(f"{'='*60}")
     print(f"Command: {' '.join(cmd)}")
     print()
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        print(f"\nError: {desc} failed with code {result.returncode}")
+        print(f"\nError: [{step_label}] {desc} failed with code {result.returncode}")
         sys.exit(1)
 
     return result
@@ -74,7 +74,7 @@ def main():
     print(f"GPUs: {args.num_gpus}")
     print(f"Label mode: {args.label_mode}")
 
-    # Step 1: Collect responses (only if not skipped)
+    # Step 0.1: Collect responses (only if not skipped)
     if not args.skip_collect and not responses_file.exists():
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -86,11 +86,11 @@ def main():
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "Collect responses")
+        run_command(cmd, "0.1", "Collect responses")
     else:
-        print(f"\nSkipping response collection (using {responses_file})")
+        print(f"\n[0.1] Skipping response collection (using {responses_file})")
 
-    # Step 2: Evaluate baseline QA accuracy (before training)
+    # Step 0.2: Evaluate baseline QA accuracy (before training)
     if not args.skip_qa_eval and args.start_epoch == 1:
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -102,7 +102,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--output_file", "eval_qa_epoch0.jsonl",
         ]
-        run_command(cmd, "Evaluate baseline QA accuracy (epoch 0)")
+        run_command(cmd, "0.2", "Evaluate baseline QA accuracy")
 
     # Training loop
     current_model = args.model
@@ -115,7 +115,7 @@ def main():
         tested_file = output_dir / f"tested_epoch{epoch}.jsonl"
         epoch_dir = output_dir / f"epoch_{epoch}"
 
-        # Step 3a: Test judgments
+        # Step N.1: Test judgments
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
             str(scripts_dir / "inference_ddp.py"),
@@ -127,9 +127,9 @@ def main():
             "--output_file", f"tested_epoch{epoch}.jsonl",
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, f"Test judgments (epoch {epoch})")
+        run_command(cmd, f"{epoch}.1", "Test judgment accuracy")
 
-        # Step 3b: Train on all samples (prevents forgetting correct judgments)
+        # Step N.2: Train on all samples (prevents forgetting correct judgments)
         cmd = [
             "deepspeed", f"--num_gpus={args.num_gpus}",
             str(scripts_dir / "train_deepspeed.py"),
@@ -141,7 +141,7 @@ def main():
             "--lr", str(args.lr),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, f"Train (epoch {epoch})")
+        run_command(cmd, f"{epoch}.2", "Train judgment")
 
         # Update model path for next epoch
         current_model = str(epoch_dir)
@@ -150,7 +150,7 @@ def main():
         if tested_file.exists():
             tested_file.unlink()
 
-        # Step 3c: Evaluate QA accuracy after training
+        # Step N.3: Evaluate QA accuracy after training
         if not args.skip_qa_eval:
             cmd = [
                 "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -162,7 +162,7 @@ def main():
                 "--batch_size", str(args.batch_size),
                 "--output_file", f"eval_qa_epoch{epoch}.jsonl",
             ]
-            run_command(cmd, f"Evaluate QA accuracy (epoch {epoch})")
+            run_command(cmd, f"{epoch}.3", "Evaluate QA accuracy")
 
     print(f"\n{'#'*60}")
     print("Training Complete!")
