@@ -553,17 +553,16 @@ def main():
             save_to_jsonl(samples, str(responses_file))
             print(f"Saved responses to {responses_file}")
 
-        # Broadcast samples to all ranks
-        if world_size > 1:
-            import torch.distributed as dist
-            if is_main:
-                # Main process broadcasts the samples file path
-                dist.barrier()
-            else:
-                dist.barrier()
-                # Other ranks load from saved file
-                responses_file = output_dir / "responses.jsonl"
-                samples = load_from_jsonl(str(responses_file))
+        # Sync: other ranks wait for main to finish and load from file
+        if world_size > 1 and not is_main:
+            import time
+            responses_file = output_dir / "responses.jsonl"
+            # Wait for file to be created by rank 0
+            while not responses_file.exists():
+                time.sleep(1)
+            # Small delay to ensure file is fully written
+            time.sleep(2)
+            samples = load_from_jsonl(str(responses_file))
 
     # Print ability distribution
     if is_main:
