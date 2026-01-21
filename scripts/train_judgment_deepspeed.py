@@ -234,16 +234,28 @@ def preprocess_function(examples, tokenizer):
     return tokenized
 
 
-def test_judgment_accuracy(samples, model, tokenizer, batch_size=8):
+def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
+                           local_rank=0, world_size=1, show_progress=True):
     """
-    Test model's judgment accuracy.
+    Test model's judgment accuracy with data parallel inference.
+    Each rank processes its shard of data.
     Returns list of samples with 'judgment_correct' field.
     """
+    # Shard data across ranks
+    shard_size = (len(samples) + world_size - 1) // world_size
+    start_idx = local_rank * shard_size
+    end_idx = min(start_idx + shard_size, len(samples))
+    local_samples = samples[start_idx:end_idx]
+
     results = []
     model.eval()
 
-    for i in tqdm(range(0, len(samples), batch_size), desc="Testing judgments"):
-        batch = samples[i:i + batch_size]
+    iterator = range(0, len(local_samples), batch_size)
+    if show_progress:
+        iterator = tqdm(iterator, desc=f"Rank {local_rank} testing judgments")
+
+    for i in iterator:
+        batch = local_samples[i:i + batch_size]
 
         # Build judgment prompts
         prompts = []
@@ -289,29 +301,23 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8):
             result = sample.copy()
             result["predicted_judgment"] = predicted
             result["judgment_correct"] = judgment_correct
+            result["_original_idx"] = start_idx + i + j
             results.append(result)
 
     return results
 
 
-def run_batch_training(args, model, tokenizer, samples, epoch, is_main):
+def run_batch_training(args, model, tokenizer, tested_samples, epoch, is_main):
     """
-    Batch training mode: test all samples, then train on incorrect judgments.
+    Batch training mode: train on incorrect judgments.
+    Expects tested_samples with 'judgment_correct' field already set.
     """
-    if is_main:
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch}: Testing all samples...")
-        print(f"{'='*60}")
-
-    # Test judgments
-    tested_samples = test_judgment_accuracy(samples, model, tokenizer, batch_size=args.batch_size)
-
     # Filter incorrect judgments
     incorrect_samples = [s for s in tested_samples if not s["judgment_correct"]]
-    correct_count = len(samples) - len(incorrect_samples)
+    correct_count = len(tested_samples) - len(incorrect_samples)
 
     if is_main:
-        print(f"Judgment accuracy: {correct_count}/{len(samples)} ({correct_count/len(samples)*100:.1f}%)")
+        print(f"Judgment accuracy: {correct_count}/{len(tested_samples)} ({correct_count/len(tested_samples)*100:.1f}%)")
         print(f"Samples to train: {len(incorrect_samples)}")
 
     if len(incorrect_samples) == 0:
@@ -662,9 +668,81 @@ def main():
     current_model_path = args.model
 
     for epoch in range(1, args.epochs + 1):
-        # Load model for training (no device_map for DeepSpeed compatibility)
         if is_main:
-            print(f"\nLoading model from {current_model_path} for epoch {epoch}...")
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch}")
+            print(f"{'='*60}")
+
+        # ===== Phase 1: Test judgments with data parallel inference =====
+        if is_main:
+            print(f"\nPhase 1: Testing judgments with {world_size} GPUs...")
+
+        # Each rank loads model on its own GPU for inference
+        device = f"cuda:{local_rank}" if local_rank >= 0 else "cuda:0"
+        inference_model = AutoModelForCausalLM.from_pretrained(
+            current_model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        ).to(device)
+
+        # Test judgments in parallel
+        local_tested = test_judgment_accuracy(
+            samples, inference_model, tokenizer,
+            batch_size=args.batch_size,
+            local_rank=max(0, local_rank),
+            world_size=world_size,
+            show_progress=is_main
+        )
+
+        # Free inference model
+        del inference_model
+        torch.cuda.empty_cache()
+
+        # Sync all ranks
+        if world_size > 1:
+            torch.distributed.barrier()
+
+        # Save local results
+        local_test_file = output_dir / f"test_rank{max(0, local_rank)}_epoch{epoch}.jsonl"
+        save_to_jsonl(local_tested, str(local_test_file))
+
+        # Sync after saving
+        if world_size > 1:
+            torch.distributed.barrier()
+
+        # Merge results on main process
+        if is_main:
+            all_tested = []
+            for rank in range(world_size):
+                rank_file = output_dir / f"test_rank{rank}_epoch{epoch}.jsonl"
+                rank_results = load_from_jsonl(str(rank_file))
+                all_tested.extend(rank_results)
+
+            # Sort by original index
+            all_tested.sort(key=lambda x: x.get("_original_idx", 0))
+            for r in all_tested:
+                r.pop("_original_idx", None)
+
+            tested_samples = all_tested
+
+            # Cleanup temp files
+            for rank in range(world_size):
+                (output_dir / f"test_rank{rank}_epoch{epoch}.jsonl").unlink(missing_ok=True)
+
+        # Sync and broadcast tested_samples
+        if world_size > 1:
+            torch.distributed.barrier()
+            if not is_main:
+                # Non-main ranks don't need tested_samples for training
+                tested_samples = local_tested
+                for r in tested_samples:
+                    r.pop("_original_idx", None)
+
+        # ===== Phase 2: Train with DeepSpeed =====
+        if is_main:
+            print(f"\nPhase 2: Training with DeepSpeed...")
+
+        # Load model for training (no device_map, DeepSpeed will handle distribution)
         model = AutoModelForCausalLM.from_pretrained(
             current_model_path,
             torch_dtype=torch.bfloat16,
@@ -674,7 +752,7 @@ def main():
         # Run training
         if args.training_mode == "batch":
             tested_samples, avg_loss = run_batch_training(
-                args, model, tokenizer, samples, epoch, is_main
+                args, model, tokenizer, tested_samples, epoch, is_main
             )
         else:
             tested_samples, avg_loss = run_adaptive_training(
