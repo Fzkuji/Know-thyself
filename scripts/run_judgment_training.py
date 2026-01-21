@@ -144,9 +144,8 @@ def main():
         # Update model path for next epoch
         current_model = str(epoch_dir)
 
-        # Cleanup previous tested file (except epoch 0)
-        if epoch > 1 and tested_file.exists():
-            tested_file.unlink()
+        # Note: Keep tested files for summary statistics
+        # Previously deleted to save space, but needed for print_summary
 
         # Step N.2: Evaluate QA accuracy after training (get new ground truth)
         cmd = [
