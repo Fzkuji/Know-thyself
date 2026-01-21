@@ -49,12 +49,21 @@ Based on accuracy across 5 trials:
 - **Training**: TriviaQA `train` split
 - **Testing**: TriviaQA `validation` split (held-out)
 
+## Supported Datasets
+
+| Dataset | Split | Size | Description |
+|---------|-------|------|-------------|
+| TriviaQA | train | 138K | Trivia questions with multiple answer aliases |
+| TriviaQA | validation | 18K | Held-out test set |
+| HotpotQA | train | 90K | Multi-hop reasoning questions |
+| HotpotQA | validation | 7.4K | Held-out test set |
+
 ## Project Structure
 
 ```
 Know-thyself/
 ├── src/
-│   ├── data_loader.py      # Load TriviaQA dataset
+│   ├── data_loader.py      # Load QA datasets (TriviaQA, HotpotQA)
 │   ├── inference.py        # Batch inference
 │   ├── evaluator.py        # Evaluate responses
 │   ├── label_generator.py  # Generate training labels
@@ -64,13 +73,13 @@ Know-thyself/
 │   ├── adapter_utils.py    # LoRA merge utilities
 │   └── pipeline.py         # Multi-phase state management
 ├── scripts/
-│   ├── step1_collect_responses.py
-│   ├── step2_build_dataset.py
-│   ├── step3_train.py
-│   ├── step4_evaluate.py
-│   ├── phase2_knowledge.py
-│   ├── phase3_update_judgment.py
-│   └── run_multiphase.py   # Unified entry point
+│   ├── run_judgment_training.py  # Main entry point (recommended)
+│   ├── inference_ddp.py          # Multi-GPU inference
+│   ├── train_deepspeed.py        # DeepSpeed ZeRO-3 training
+│   ├── run_multiphase.py         # Legacy multi-phase pipeline
+│   └── debug_tokenization.py     # Debug utilities
+├── configs/
+│   └── ds_config_zero3.json      # DeepSpeed config
 ├── experiments/            # Experiment outputs
 └── run_multiphase_pipeline.sh
 ```
@@ -82,6 +91,99 @@ pip install -r requirements.txt
 ```
 
 ## Usage
+
+### Judgment Training Pipeline (Recommended)
+
+This is the **simplified single-phase pipeline** for training judgment ability with multi-GPU support.
+
+```bash
+# Run with TriviaQA (default)
+python scripts/run_judgment_training.py \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --epochs 10 \
+    --num_gpus 8
+
+# Run with HotpotQA
+python scripts/run_judgment_training.py \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --dataset hotpotqa \
+    --epochs 10 \
+    --num_gpus 8
+
+# Custom settings
+python scripts/run_judgment_training.py \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --dataset triviaqa \
+    --num_samples 10000 \
+    --num_val_samples 2000 \
+    --epochs 5 \
+    --lr 1e-5 \
+    --batch_size 16 \
+    --num_gpus 8
+```
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--model` | Qwen/Qwen2.5-7B-Instruct | Model name or path |
+| `--dataset` | triviaqa | Dataset: `triviaqa` or `hotpotqa` |
+| `--epochs` | 10 | Number of training epochs |
+| `--num_samples` | 5000 | Number of training samples |
+| `--num_val_samples` | 1000 | Number of validation samples |
+| `--lr` | 1e-5 | Learning rate |
+| `--batch_size` | 16 | Batch size per GPU |
+| `--num_gpus` | 8 | Number of GPUs |
+| `--label_mode` | binary | Label mode: `binary` (yes/no) or `uncertainty` (yes/uncertain/no) |
+| `--output_dir` | auto | Output directory (auto-generated if not specified) |
+| `--skip_collect` | false | Skip response collection (use existing) |
+| `--start_epoch` | 1 | Resume from this epoch |
+
+**Pipeline Steps:**
+
+```
+Step 0: Evaluate pretrained model
+├── 0.1 Collect train responses (get ability labels)
+├── 0.2 Test pretrained judgment (Train)
+├── 0.3 Collect validation responses
+└── 0.4 Test pretrained judgment (Val)
+
+For each epoch N:
+├── N.1 Train on samples where judgment was wrong
+├── N.2 Re-collect responses (get new ability labels)
+├── N.3 Test judgment accuracy (Train)
+├── N.4 Re-collect validation responses
+└── N.5 Test judgment accuracy (Val)
+```
+
+**Output Structure:**
+
+```
+experiments/qwen2.5_7b_instruct_triviaqa_binary_lr1e05_20240121_123456/
+├── responses.jsonl              # Train set ability labels
+├── val_responses.jsonl          # Val set ability labels
+├── tested_epoch0.jsonl          # Pretrained judgment results (Train)
+├── val_tested_epoch0.jsonl      # Pretrained judgment results (Val)
+├── epoch_1/                     # Trained model checkpoint
+├── responses_epoch1.jsonl       # Updated ability labels
+├── tested_epoch1.jsonl          # Epoch 1 judgment results
+├── ...
+└── epoch_N/                     # Final model
+```
+
+**Summary Output:**
+
+```
+Epoch    Train Judg   Train QA     Train AUROC  Val Judg     Val QA       Val AUROC
+----------------------------------------------------------------------------------
+0        52.3%        45.2%        0.5234       51.8%        44.9%        0.5198
+1        68.5%        45.1%        0.7123       65.2%        44.8%        0.6892
+...
+```
+
+---
+
+### Multi-phase Pipeline (Legacy)
 
 ### Quick Start (Recommended)
 

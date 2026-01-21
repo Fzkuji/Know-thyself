@@ -24,6 +24,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.data_loader import SUPPORTED_DATASETS
+
 
 def run_command(cmd, step_label, desc, model=None, input_file=None):
     """Run a command and handle errors."""
@@ -55,6 +58,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--label_mode", type=str, default="binary", choices=["binary", "uncertainty"])
     parser.add_argument("--deepspeed_config", type=str, default="configs/ds_config_zero3.json")
+    parser.add_argument("--dataset", type=str, default="triviaqa", choices=SUPPORTED_DATASETS,
+                        help=f"Dataset to use: {', '.join(SUPPORTED_DATASETS)}")
 
     # Resume options
     parser.add_argument("--skip_collect", action="store_true", help="Skip response collection (use existing)")
@@ -68,7 +73,7 @@ def main():
         model_name = args.model.split("/")[-1].lower().replace("-", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         lr_str = f"{args.lr:.0e}".replace("-", "").replace("+", "")
-        args.output_dir = f"experiments/{model_name}_{args.label_mode}_lr{lr_str}_{timestamp}"
+        args.output_dir = f"experiments/{model_name}_{args.dataset}_{args.label_mode}_lr{lr_str}_{timestamp}"
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +90,7 @@ def main():
     print(f"Epochs: {args.epochs}")
     print(f"GPUs: {args.num_gpus}")
     print(f"Label mode: {args.label_mode}")
+    print(f"Dataset: {args.dataset}")
     print(f"Train samples: {args.num_samples}")
     print(f"Val samples: {args.num_val_samples}")
 
@@ -104,6 +110,7 @@ def main():
             "--split", "train",
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
+            "--dataset", args.dataset,
         ]
         run_command(cmd, "0.1", "Evaluate pretrained QA accuracy (Train)", model=args.model)
     else:
@@ -137,6 +144,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
             "--output_file", "val_responses.jsonl",
+            "--dataset", args.dataset,
         ]
         run_command(cmd, "0.3", "Evaluate pretrained QA accuracy (Val)", model=args.model)
     else:

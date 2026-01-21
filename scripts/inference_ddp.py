@@ -31,7 +31,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 
-from src.data_loader import load_triviaqa, format_question_prompt
+from src.data_loader import load_dataset_by_name, format_question_prompt, SUPPORTED_DATASETS
 from src.dataset_builder import load_from_jsonl, save_to_jsonl
 from src.evaluator import is_correct, classify_ability, classify_ability_binary
 from src.label_generator import get_system_prompt
@@ -389,6 +389,8 @@ def main():
     parser.add_argument("--input", type=str, default=None, help="Input JSONL file")
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of samples")
     parser.add_argument("--split", type=str, default="train", help="Dataset split")
+    parser.add_argument("--dataset", type=str, default="triviaqa", choices=SUPPORTED_DATASETS,
+                        help=f"Dataset to use: {', '.join(SUPPORTED_DATASETS)}")
 
     # Collect mode options
     parser.add_argument("--label_mode", type=str, default="binary", choices=["binary", "uncertainty"])
@@ -433,7 +435,7 @@ def main():
     if args.input:
         samples = load_from_jsonl(args.input)
     else:
-        samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
+        samples = load_dataset_by_name(args.dataset, split=args.split, num_samples=args.num_samples)
 
     # Run inference
     if args.mode == "collect":
