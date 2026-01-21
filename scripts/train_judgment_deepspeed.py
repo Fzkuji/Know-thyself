@@ -323,7 +323,7 @@ def run_batch_training(args, model, tokenizer, tested_samples, epoch, is_main):
     if len(incorrect_samples) == 0:
         if is_main:
             print("All judgments correct! No training needed.")
-        return tested_samples, 0.0
+        return tested_samples, 0.0, None  # No trainer when no training needed
 
     # Build training dataset from incorrect samples
     dataset_dict = {
@@ -382,7 +382,7 @@ def run_batch_training(args, model, tokenizer, tested_samples, epoch, is_main):
                 print(f"\nTraining on {len(incorrect_samples)} samples (batch_size={current_batch_size}, grad_accum={current_grad_accum})...")
 
             train_result = trainer.train()
-            return tested_samples, train_result.training_loss
+            return tested_samples, train_result.training_loss, trainer
 
         except RuntimeError as e:
             if "out of memory" in str(e).lower() or "CUDA" in str(e):
@@ -418,6 +418,7 @@ def run_adaptive_training(args, model, tokenizer, samples, epoch, is_main):
     correct_count = 0
     trained_count = 0
     total_loss = 0.0
+    last_trainer = None
 
     for idx, sample in enumerate(tqdm(samples, desc="Adaptive training")):
         # Test single sample
@@ -475,13 +476,14 @@ def run_adaptive_training(args, model, tokenizer, samples, epoch, is_main):
         train_result = trainer.train()
         trained_count += 1
         total_loss += train_result.training_loss
+        last_trainer = trainer
 
     if is_main:
         print(f"\nCorrect judgments: {correct_count}/{len(samples)} ({correct_count/len(samples)*100:.1f}%)")
         print(f"Trained samples: {trained_count}")
 
     avg_loss = total_loss / trained_count if trained_count > 0 else 0.0
-    return None, avg_loss
+    return None, avg_loss, last_trainer
 
 
 def main():
@@ -751,11 +753,11 @@ def main():
 
         # Run training
         if args.training_mode == "batch":
-            tested_samples, avg_loss = run_batch_training(
+            tested_samples, avg_loss, trainer = run_batch_training(
                 args, model, tokenizer, tested_samples, epoch, is_main
             )
         else:
-            tested_samples, avg_loss = run_adaptive_training(
+            tested_samples, avg_loss, trainer = run_adaptive_training(
                 args, model, tokenizer, samples, epoch, is_main
             )
 
@@ -764,19 +766,19 @@ def main():
         if is_main:
             print(f"\nSaving model to {epoch_dir}...")
 
-        # Save using trainer's save_model for DeepSpeed compatibility
-        training_args = TrainingArguments(
-            output_dir=str(epoch_dir),
-            deepspeed=args.deepspeed,
-        )
-        trainer = Trainer(model=model, args=training_args)
-        trainer.save_model(str(epoch_dir))
+        if trainer is not None:
+            # Use the trainer that did training (has proper DeepSpeed state)
+            trainer.save_model(str(epoch_dir))
+        else:
+            # No training happened, save model directly
+            model.save_pretrained(str(epoch_dir))
         tokenizer.save_pretrained(str(epoch_dir))
 
         # Update model path for next epoch and free memory
         current_model_path = str(epoch_dir)
         del model
-        del trainer
+        if trainer is not None:
+            del trainer
         torch.cuda.empty_cache()
 
         # Save stats
