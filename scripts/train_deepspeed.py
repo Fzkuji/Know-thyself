@@ -35,7 +35,11 @@ from src.label_generator import build_training_sample
 
 @dataclass
 class DataCollatorForCausalLM:
-    """Data collator for causal language modeling."""
+    """Data collator for causal language modeling.
+
+    Properly handles left-padding by padding labels on the left as well,
+    to maintain alignment between input_ids and labels.
+    """
     tokenizer: Any
     padding: bool = True
     max_length: int = None
@@ -62,10 +66,18 @@ class DataCollatorForCausalLM:
                     * self.pad_to_multiple_of
                 )
 
+            # Match padding side with tokenizer
+            pad_left = getattr(self.tokenizer, "padding_side", "right") == "left"
+
             padded_labels = []
             for label in labels:
                 remainder = max_label_length - len(label)
-                padded_label = list(label) + [self.label_pad_token_id] * remainder
+                if pad_left:
+                    # Left padding: add -100 at the beginning
+                    padded_label = [self.label_pad_token_id] * remainder + list(label)
+                else:
+                    # Right padding: add -100 at the end
+                    padded_label = list(label) + [self.label_pad_token_id] * remainder
                 padded_labels.append(padded_label)
 
             batch["labels"] = torch.tensor(padded_labels, dtype=torch.long)
