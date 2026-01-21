@@ -74,7 +74,7 @@ def main():
     print(f"GPUs: {args.num_gpus}")
     print(f"Label mode: {args.label_mode}")
 
-    # Step 0.1: Collect responses (only if not skipped)
+    # Step 0.1: Collect responses to get ground truth ability labels
     if not args.skip_collect and not responses_file.exists():
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -86,11 +86,11 @@ def main():
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.1", "Collect responses")
+        run_command(cmd, "0.1", "Collect responses (generate ground truth)")
     else:
         print(f"\n[0.1] Skipping response collection (using {responses_file})")
 
-    # Step 0.2: Evaluate baseline QA accuracy (before training)
+    # Step 0.2: Evaluate pretrained QA accuracy
     if not args.skip_qa_eval and args.start_epoch == 1:
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -102,7 +102,22 @@ def main():
             "--batch_size", str(args.batch_size),
             "--output_file", "eval_qa_epoch0.jsonl",
         ]
-        run_command(cmd, "0.2", "Evaluate baseline QA accuracy")
+        run_command(cmd, "0.2", "Evaluate pretrained QA accuracy")
+
+    # Step 0.3: Evaluate pretrained judgment accuracy
+    if args.start_epoch == 1:
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "test",
+            "--model", args.model,
+            "--input", str(responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", "tested_epoch0.jsonl",
+            "--label_mode", args.label_mode,
+        ]
+        run_command(cmd, "0.3", "Evaluate pretrained judgment accuracy")
 
     # Training loop
     current_model = args.model
@@ -112,24 +127,14 @@ def main():
         print(f"Epoch {epoch}/{args.epochs}")
         print(f"{'#'*60}")
 
-        tested_file = output_dir / f"tested_epoch{epoch}.jsonl"
+        # Use previous epoch's tested file for training
+        if epoch == 1:
+            tested_file = output_dir / "tested_epoch0.jsonl"
+        else:
+            tested_file = output_dir / f"tested_epoch{epoch-1}.jsonl"
         epoch_dir = output_dir / f"epoch_{epoch}"
 
-        # Step N.1: Test judgments
-        cmd = [
-            "torchrun", f"--nproc_per_node={args.num_gpus}",
-            str(scripts_dir / "inference_ddp.py"),
-            "--mode", "test",
-            "--model", current_model,
-            "--input", str(responses_file),
-            "--output_dir", str(output_dir),
-            "--batch_size", str(args.batch_size),
-            "--output_file", f"tested_epoch{epoch}.jsonl",
-            "--label_mode", args.label_mode,
-        ]
-        run_command(cmd, f"{epoch}.1", "Test judgment accuracy")
-
-        # Step N.2: Train on all samples (prevents forgetting correct judgments)
+        # Step N.1: Train on samples
         cmd = [
             "deepspeed", f"--num_gpus={args.num_gpus}",
             str(scripts_dir / "train_deepspeed.py"),
@@ -141,16 +146,16 @@ def main():
             "--lr", str(args.lr),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, f"{epoch}.2", "Train judgment")
+        run_command(cmd, f"{epoch}.1", "Train judgment")
 
         # Update model path for next epoch
         current_model = str(epoch_dir)
 
-        # Cleanup tested file
-        if tested_file.exists():
+        # Cleanup previous tested file (except epoch 0)
+        if epoch > 1 and tested_file.exists():
             tested_file.unlink()
 
-        # Step N.3: Evaluate QA accuracy after training
+        # Step N.2: Evaluate QA accuracy after training
         if not args.skip_qa_eval:
             cmd = [
                 "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -162,7 +167,21 @@ def main():
                 "--batch_size", str(args.batch_size),
                 "--output_file", f"eval_qa_epoch{epoch}.jsonl",
             ]
-            run_command(cmd, f"{epoch}.3", "Evaluate QA accuracy")
+            run_command(cmd, f"{epoch}.2", "Evaluate QA accuracy")
+
+        # Step N.3: Evaluate judgment accuracy after training
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "test",
+            "--model", current_model,
+            "--input", str(responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", f"tested_epoch{epoch}.jsonl",
+            "--label_mode", args.label_mode,
+        ]
+        run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy")
 
     print(f"\n{'#'*60}")
     print("Training Complete!")
