@@ -264,6 +264,25 @@ def main():
     print_summary(output_dir, args.epochs)
 
 
+def compute_auroc(samples):
+    """Compute AUROC from samples with yes_prob field."""
+    from sklearn.metrics import roc_auc_score
+
+    # Filter samples with yes_prob
+    valid_samples = [s for s in samples if "yes_prob" in s]
+    if not valid_samples:
+        return None
+
+    y_true = [1 if s["ability"] == "can" else 0 for s in valid_samples]
+    y_scores = [s["yes_prob"] for s in valid_samples]
+
+    # Need both classes for AUROC
+    if len(set(y_true)) < 2:
+        return None
+
+    return roc_auc_score(y_true, y_scores)
+
+
 def print_summary(output_dir: Path, epochs: int):
     """Print summary of all epochs with train and validation results."""
     print(f"\n{'#'*60}")
@@ -275,13 +294,17 @@ def print_summary(output_dir: Path, epochs: int):
     for epoch in range(0, epochs + 1):
         epoch_result = {"epoch": epoch}
 
-        # Read Train judgment accuracy from tested_epochN.jsonl
+        # Read Train judgment accuracy and AUROC from tested_epochN.jsonl
         judgment_file = output_dir / f"tested_epoch{epoch}.jsonl"
         if judgment_file.exists():
             with open(judgment_file) as f:
                 samples = [json.loads(line) for line in f]
             correct = sum(1 for s in samples if s.get("judgment_correct", False))
             epoch_result["train_judgment_acc"] = correct / len(samples) * 100 if samples else 0
+            # Compute AUROC
+            auroc = compute_auroc(samples)
+            if auroc is not None:
+                epoch_result["train_auroc"] = auroc
 
         # Read Train QA accuracy from responses.jsonl (epoch 0) or responses_epochN.jsonl (epoch N)
         if epoch == 0:
@@ -294,13 +317,17 @@ def print_summary(output_dir: Path, epochs: int):
             correct = sum(1 for s in samples if s.get("ability") == "can")
             epoch_result["train_qa_acc"] = correct / len(samples) * 100 if samples else 0
 
-        # Read Validation judgment accuracy from val_tested_epochN.jsonl
+        # Read Validation judgment accuracy and AUROC from val_tested_epochN.jsonl
         val_judgment_file = output_dir / f"val_tested_epoch{epoch}.jsonl"
         if val_judgment_file.exists():
             with open(val_judgment_file) as f:
                 samples = [json.loads(line) for line in f]
             correct = sum(1 for s in samples if s.get("judgment_correct", False))
             epoch_result["val_judgment_acc"] = correct / len(samples) * 100 if samples else 0
+            # Compute AUROC
+            auroc = compute_auroc(samples)
+            if auroc is not None:
+                epoch_result["val_auroc"] = auroc
 
         # Read Validation QA accuracy from val_responses.jsonl (epoch 0) or val_responses_epochN.jsonl (epoch N)
         if epoch == 0:
@@ -315,33 +342,40 @@ def print_summary(output_dir: Path, epochs: int):
 
         results.append(epoch_result)
 
-    # Print table with 4 columns
-    print(f"\n{'Epoch':<8} {'Train Judg':<12} {'Train QA':<12} {'Val Judg':<12} {'Val QA':<12}")
-    print("-" * 60)
+    # Print table with 6 columns (including AUROC)
+    print(f"\n{'Epoch':<8} {'Train Judg':<12} {'Train QA':<12} {'Train AUROC':<12} {'Val Judg':<12} {'Val QA':<12} {'Val AUROC':<12}")
+    print("-" * 84)
 
     for r in results:
         epoch_str = f"{r['epoch']}"
         train_judg = f"{r.get('train_judgment_acc', 0):.1f}%" if "train_judgment_acc" in r else "N/A"
         train_qa = f"{r.get('train_qa_acc', 0):.1f}%" if "train_qa_acc" in r else "N/A"
+        train_auroc = f"{r.get('train_auroc', 0):.4f}" if "train_auroc" in r else "N/A"
         val_judg = f"{r.get('val_judgment_acc', 0):.1f}%" if "val_judgment_acc" in r else "N/A"
         val_qa = f"{r.get('val_qa_acc', 0):.1f}%" if "val_qa_acc" in r else "N/A"
-        print(f"{epoch_str:<8} {train_judg:<12} {train_qa:<12} {val_judg:<12} {val_qa:<12}")
+        val_auroc = f"{r.get('val_auroc', 0):.4f}" if "val_auroc" in r else "N/A"
+        print(f"{epoch_str:<8} {train_judg:<12} {train_qa:<12} {train_auroc:<12} {val_judg:<12} {val_qa:<12} {val_auroc:<12}")
 
     # Print improvement summary
-    print(f"\n{'='*60}")
+    print(f"\n{'='*84}")
     print("Improvement (epoch 0 → epoch {})".format(epochs))
-    print("="*60)
+    print("="*84)
 
     if len(results) >= 2:
-        for metric, label in [
-            ("train_judgment_acc", "Train Judgment"),
-            ("train_qa_acc", "Train QA"),
-            ("val_judgment_acc", "Val Judgment"),
-            ("val_qa_acc", "Val QA"),
+        for metric, label, is_pct in [
+            ("train_judgment_acc", "Train Judgment", True),
+            ("train_qa_acc", "Train QA", True),
+            ("train_auroc", "Train AUROC", False),
+            ("val_judgment_acc", "Val Judgment", True),
+            ("val_qa_acc", "Val QA", True),
+            ("val_auroc", "Val AUROC", False),
         ]:
             if metric in results[0] and metric in results[-1]:
                 diff = results[-1][metric] - results[0][metric]
-                diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                if is_pct:
+                    diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                else:
+                    diff_str = f"+{diff:.4f}" if diff >= 0 else f"{diff:.4f}"
                 print(f"  {label:<16}: {diff_str}")
 
     print(f"\nFinal model: {output_dir / f'epoch_{epochs}'}")

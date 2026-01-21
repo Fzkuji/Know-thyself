@@ -29,6 +29,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 
 from src.data_loader import load_triviaqa, format_question_prompt
 from src.dataset_builder import load_from_jsonl, save_to_jsonl
@@ -253,7 +254,7 @@ def parse_judgment_uncertainty(response: str) -> str:
 
 def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
                            label_mode="binary", local_rank=0, world_size=1, show_progress=True):
-    """Test model's judgment accuracy."""
+    """Test model's judgment accuracy with confidence scores for AUROC."""
     # Shard data across ranks
     shard_size = (len(samples) + world_size - 1) // world_size
     start_idx = local_rank * shard_size
@@ -266,6 +267,10 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
     # Get system prompt based on mode
     system_prompt = get_system_prompt(label_mode)
     parse_fn = parse_judgment_binary if label_mode == "binary" else parse_judgment_uncertainty
+
+    # Get token IDs for yes/no (for probability computation)
+    yes_token_id = tokenizer.encode("yes", add_special_tokens=False)[-1]
+    no_token_id = tokenizer.encode("no", add_special_tokens=False)[-1]
 
     iterator = range(0, len(local_samples), batch_size)
     if show_progress:
@@ -292,6 +297,30 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
         ).to(model.device)
 
         with torch.no_grad():
+            # First, get logits for the first generated token to compute confidence
+            model_outputs = model(**inputs)
+            logits = model_outputs.logits  # [batch_size, seq_len, vocab_size]
+
+            # Compute yes probability for each sample
+            batch_probs = []
+            for j in range(len(batch)):
+                # Find the last non-padding position
+                attention_mask = inputs["attention_mask"][j]
+                last_pos = attention_mask.sum() - 1
+
+                # Get logits at last position (predicts first output token)
+                next_token_logits = logits[j, last_pos, :]
+
+                # Compute softmax probability for yes vs no
+                yes_no_logits = torch.tensor([
+                    next_token_logits[yes_token_id].item(),
+                    next_token_logits[no_token_id].item()
+                ])
+                yes_no_probs = torch.softmax(yes_no_logits, dim=0)
+                yes_prob = yes_no_probs[0].item()
+                batch_probs.append(yes_prob)
+
+            # Generate full response for parsing
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=32,
@@ -304,10 +333,11 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
             response = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip()
 
             predicted = parse_fn(response)
+            yes_prob = batch_probs[j]
 
             # Debug: print first few responses
             if local_rank == 0 and i == 0 and j < 3:
-                print(f"[DEBUG] Response: '{response}' -> {predicted}")
+                print(f"[DEBUG] Response: '{response}' -> {predicted}, yes_prob: {yes_prob:.4f}")
 
             ground_truth = sample["ability"]
             judgment_correct = (predicted == ground_truth)
@@ -315,6 +345,7 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
             result = sample.copy()
             result["predicted_judgment"] = predicted
             result["judgment_correct"] = judgment_correct
+            result["yes_prob"] = yes_prob  # Confidence score for AUROC
             result["_original_idx"] = start_idx + i + j
             results.append(result)
 
@@ -536,6 +567,34 @@ def main():
                     print(f"{gt:15} {row_str}  (n={total})")
 
             print("-" * (15 + len(header) + 10))
+
+            # Compute AUROC using yes_prob as confidence score
+            # Ground truth: can=1 (positive), cannot=0 (negative)
+            y_true = [1 if r["ability"] == "can" else 0 for r in all_results]
+            y_scores = [r.get("yes_prob", 0.5) for r in all_results]
+
+            # Only compute AUROC if we have both classes
+            if len(set(y_true)) > 1:
+                auroc = roc_auc_score(y_true, y_scores)
+
+                # Load baseline AUROC for comparison
+                baseline_auroc = None
+                if args.baseline and Path(args.baseline).exists():
+                    baseline_results = load_from_jsonl(args.baseline)
+                    if baseline_results and "yes_prob" in baseline_results[0]:
+                        b_y_true = [1 if r["ability"] == "can" else 0 for r in baseline_results]
+                        b_y_scores = [r.get("yes_prob", 0.5) for r in baseline_results]
+                        if len(set(b_y_true)) > 1:
+                            baseline_auroc = roc_auc_score(b_y_true, b_y_scores)
+
+                if baseline_auroc is not None:
+                    diff = auroc - baseline_auroc
+                    diff_str = f"+{diff:.4f}" if diff >= 0 else f"{diff:.4f}"
+                    print(f"\nAUROC: {auroc:.4f}  [baseline: {baseline_auroc:.4f}, diff: {diff_str}]")
+                else:
+                    print(f"\nAUROC: {auroc:.4f}")
+            else:
+                print(f"\nAUROC: N/A (only one class present)")
 
         else:  # eval_qa
             correct = sum(1 for r in all_results if r["eval_correct"])
