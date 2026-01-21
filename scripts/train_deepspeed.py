@@ -73,14 +73,14 @@ class DataCollatorForCausalLM:
         return batch
 
 
-def preprocess_function(examples, tokenizer):
+def preprocess_function(examples, tokenizer, label_mode="binary"):
     """Preprocess judgment samples for training."""
     texts = []
     for i in range(len(examples["question"])):
         question = examples["question"][i]
         ability = examples["ability"][i]
 
-        sample = build_training_sample(question, ability)
+        sample = build_training_sample(question, ability, label_mode=label_mode)
         text = tokenizer.apply_chat_template(
             sample["messages"],
             tokenize=False,
@@ -117,6 +117,10 @@ def main():
     parser.add_argument("--only_incorrect", action="store_true",
                         help="Only train on incorrect judgments (default: train on all samples)")
 
+    # Label mode
+    parser.add_argument("--label_mode", type=str, default="binary", choices=["binary", "uncertainty"],
+                        help="Label mode: binary (yes/no) or uncertainty (yes/uncertain/no)")
+
     args = parser.parse_args()
 
     local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
@@ -132,6 +136,7 @@ def main():
         print(f"Model: {args.model}")
         print(f"Input: {args.input}")
         print(f"Output: {args.output_dir}")
+        print(f"Label mode: {args.label_mode}")
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -174,7 +179,7 @@ def main():
     dataset = Dataset.from_dict(dataset_dict)
 
     tokenized_dataset = dataset.map(
-        lambda x: preprocess_function(x, tokenizer),
+        lambda x: preprocess_function(x, tokenizer, label_mode=args.label_mode),
         batched=True,
         remove_columns=dataset.column_names,
         desc="Tokenizing",

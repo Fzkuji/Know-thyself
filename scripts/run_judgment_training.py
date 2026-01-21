@@ -72,6 +72,7 @@ def main():
     print(f"Output: {args.output_dir}")
     print(f"Epochs: {args.epochs}")
     print(f"GPUs: {args.num_gpus}")
+    print(f"Label mode: {args.label_mode}")
 
     # Step 1: Collect responses (only if not skipped)
     if not args.skip_collect and not responses_file.exists():
@@ -124,6 +125,7 @@ def main():
             "--output_dir", str(output_dir),
             "--batch_size", str(args.batch_size),
             "--output_file", f"tested_epoch{epoch}.jsonl",
+            "--label_mode", args.label_mode,
         ]
         run_command(cmd, f"Test judgments (epoch {epoch})")
 
@@ -137,6 +139,7 @@ def main():
             "--deepspeed", args.deepspeed_config,
             "--batch_size", str(args.batch_size),
             "--lr", str(args.lr),
+            "--label_mode", args.label_mode,
         ]
         run_command(cmd, f"Train (epoch {epoch})")
 

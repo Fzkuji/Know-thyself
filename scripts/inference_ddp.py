@@ -33,7 +33,7 @@ from tqdm import tqdm
 from src.data_loader import load_triviaqa, format_question_prompt
 from src.dataset_builder import load_from_jsonl, save_to_jsonl
 from src.evaluator import is_correct, classify_ability, classify_ability_binary
-from src.label_generator import SYSTEM_PROMPT
+from src.label_generator import get_system_prompt
 
 
 def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
@@ -216,8 +216,43 @@ def eval_qa_accuracy(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
     return results
 
 
+def parse_judgment_binary(response: str) -> str:
+    """Parse judgment from response (binary mode: yes/no)."""
+    response = response.lower()
+    if "\\boxed{yes}" in response or "boxed{yes}" in response:
+        return "can"
+    elif "\\boxed{no}" in response or "boxed{no}" in response:
+        return "cannot"
+    # Fallback: check for plain yes/no
+    elif response.strip() == "yes":
+        return "can"
+    elif response.strip() == "no":
+        return "cannot"
+    # Default to cannot if unclear
+    return "cannot"
+
+
+def parse_judgment_uncertainty(response: str) -> str:
+    """Parse judgment from response (uncertainty mode: yes/uncertain/no)."""
+    response = response.lower()
+    if "\\boxed{yes}" in response or "boxed{yes}" in response:
+        return "can"
+    elif "\\boxed{uncertain}" in response or "boxed{uncertain}" in response:
+        return "uncertain"
+    elif "\\boxed{no}" in response or "boxed{no}" in response:
+        return "cannot"
+    # Fallback
+    elif response.strip() == "yes":
+        return "can"
+    elif response.strip() == "uncertain":
+        return "uncertain"
+    elif response.strip() == "no":
+        return "cannot"
+    return "cannot"
+
+
 def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
-                           local_rank=0, world_size=1, show_progress=True):
+                           label_mode="binary", local_rank=0, world_size=1, show_progress=True):
     """Test model's judgment accuracy."""
     # Shard data across ranks
     shard_size = (len(samples) + world_size - 1) // world_size
@@ -227,6 +262,10 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
 
     results = []
     model.eval()
+
+    # Get system prompt based on mode
+    system_prompt = get_system_prompt(label_mode)
+    parse_fn = parse_judgment_binary if label_mode == "binary" else parse_judgment_uncertainty
 
     iterator = range(0, len(local_samples), batch_size)
     if show_progress:
@@ -238,7 +277,7 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
         prompts = []
         for s in batch:
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {s['question']}"},
             ]
             prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -262,27 +301,13 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
 
         for j, (sample, output) in enumerate(zip(batch, outputs)):
             input_len = inputs["input_ids"][j].shape[0]
-            response = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip().lower()
+            response = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip()
 
-            # Parse judgment from response
-            if "\\boxed{yes}" in response or "boxed{yes}" in response or response.strip() == "yes":
-                predicted = "can"
-            elif "\\boxed{uncertain}" in response or "boxed{uncertain}" in response or response.strip() == "uncertain":
-                predicted = "uncertain"
-            elif "\\boxed{no}" in response or "boxed{no}" in response or response.strip() == "no":
-                predicted = "cannot"
-            else:
-                # Try to infer from response content
-                if "yes" in response and "no" not in response:
-                    predicted = "can"
-                elif "no" in response or "cannot" in response or "don't know" in response:
-                    predicted = "cannot"
-                else:
-                    predicted = "cannot"  # Default to cannot if unclear
+            predicted = parse_fn(response)
 
-            # Debug: print first few responses to see format
+            # Debug: print first few responses
             if local_rank == 0 and i == 0 and j < 3:
-                print(f"[DEBUG] Response: {response[:100]}... -> {predicted}")
+                print(f"[DEBUG] Response: '{response}' -> {predicted}")
 
             ground_truth = sample["ability"]
             judgment_correct = (predicted == ground_truth)
@@ -412,11 +437,12 @@ def main():
 
     elif args.mode == "test":
         if is_main:
-            print(f"\nTesting judgment accuracy...")
+            print(f"\nTesting judgment accuracy ({args.label_mode} mode)...")
 
         local_results = test_judgment_accuracy(
             samples, model, tokenizer,
             batch_size=args.batch_size,
+            label_mode=args.label_mode,
             local_rank=local_rank,
             world_size=world_size,
             show_progress=is_main
