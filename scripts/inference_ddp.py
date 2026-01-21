@@ -386,6 +386,29 @@ def main():
             correct = sum(1 for r in all_results if r["judgment_correct"])
             print(f"\nJudgment accuracy: {correct}/{len(all_results)} ({correct/len(all_results)*100:.1f}%)")
 
+            # Print confusion matrix
+            print(f"\nConfusion Matrix:")
+            print(f"{'':15} {'Predicted':^30}")
+            print(f"{'Ground Truth':15} {'can':>10} {'cannot':>10} {'uncertain':>10}")
+            print("-" * 55)
+
+            abilities = ["can", "cannot", "uncertain"]
+            matrix = {gt: {pred: 0 for pred in abilities} for gt in abilities}
+
+            for r in all_results:
+                gt = r["ability"]
+                pred = r["predicted_judgment"]
+                if gt in matrix and pred in abilities:
+                    matrix[gt][pred] += 1
+
+            for gt in abilities:
+                row = matrix[gt]
+                total = sum(row.values())
+                if total > 0:
+                    print(f"{gt:15} {row['can']:>10} {row['cannot']:>10} {row['uncertain']:>10}  (n={total})")
+
+            print("-" * 55)
+
     # Cleanup
     if world_size > 1:
         dist.destroy_process_group()

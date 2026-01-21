@@ -224,12 +224,15 @@ def main():
 
     train_result = trainer.train()
 
-    # Save model
+    # Save model (all ranks must participate for ZeRO-3)
     if is_main:
         print(f"\nSaving model to {output_dir}...")
 
+    # For ZeRO-3, all ranks must call save_model to gather weights
     trainer.save_model(str(output_dir))
-    tokenizer.save_pretrained(str(output_dir))
+
+    if is_main:
+        tokenizer.save_pretrained(str(output_dir))
 
     # Save stats
     if is_main:
