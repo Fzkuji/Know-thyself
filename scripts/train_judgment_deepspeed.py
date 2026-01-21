@@ -90,16 +90,29 @@ class DataCollatorForCausalLM:
         return batch
 
 
-def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_tokens=64):
+def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
+                             local_rank=0, world_size=1, show_progress=True):
     """
     Collect responses with temperature=0, single trial.
     Returns samples with 'ability' field (can/cannot).
+
+    Supports distributed: each rank processes its shard of data.
     """
+    # Shard data across ranks
+    shard_size = (len(samples) + world_size - 1) // world_size
+    start_idx = local_rank * shard_size
+    end_idx = min(start_idx + shard_size, len(samples))
+    local_samples = samples[start_idx:end_idx]
+
     results = []
     model.eval()
 
-    for i in tqdm(range(0, len(samples), batch_size), desc="Collecting responses (binary)"):
-        batch = samples[i:i + batch_size]
+    iterator = range(0, len(local_samples), batch_size)
+    if show_progress:
+        iterator = tqdm(iterator, desc=f"Rank {local_rank} collecting responses")
+
+    for i in iterator:
+        batch = local_samples[i:i + batch_size]
         prompts = [format_question_prompt(s["question"]) for s in batch]
 
         # Apply chat template
@@ -137,6 +150,7 @@ def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_to
             result["response"] = response
             result["correct"] = correct
             result["ability"] = ability
+            result["_original_idx"] = start_idx + i + j  # Track original order
             results.append(result)
 
     return results
@@ -523,46 +537,96 @@ def main():
             print(f"\nLoading TriviaQA {args.split} split...")
         samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
 
-        # Collect responses on rank 0 only (with device_map='auto' for GPU inference)
+        # Collect responses using all GPUs in parallel
         if is_main:
-            print(f"\nCollecting responses ({args.label_mode} mode)...")
-            # Load model with device_map='auto' for fast inference
-            inference_model = AutoModelForCausalLM.from_pretrained(
-                args.model,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                device_map="auto",
+            print(f"\nCollecting responses ({args.label_mode} mode) with {world_size} GPUs...")
+
+        # Each rank loads model on its own GPU
+        if local_rank >= 0:
+            device = f"cuda:{local_rank}"
+        else:
+            device = "cuda:0"
+
+        inference_model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        ).to(device)
+
+        if args.label_mode == "binary":
+            local_results = collect_responses_binary(
+                samples, inference_model, tokenizer,
+                batch_size=args.batch_size,
+                local_rank=max(0, local_rank),
+                world_size=world_size,
+                show_progress=is_main
+            )
+        else:
+            # TODO: Add distributed support for uncertainty mode
+            local_results = collect_responses_uncertainty(
+                samples, inference_model, tokenizer,
+                num_trials=args.num_trials,
+                batch_size=args.batch_size,
+                temperature=args.temperature
             )
 
-            if args.label_mode == "binary":
-                samples = collect_responses_binary(samples, inference_model, tokenizer, batch_size=args.batch_size)
-            else:
-                samples = collect_responses_uncertainty(
-                    samples, inference_model, tokenizer,
-                    num_trials=args.num_trials,
-                    batch_size=args.batch_size,
-                    temperature=args.temperature
-                )
+        # Free inference model memory
+        del inference_model
+        torch.cuda.empty_cache()
 
-            # Free inference model memory
-            del inference_model
-            torch.cuda.empty_cache()
+        # Save local results to per-rank file
+        local_responses_file = output_dir / f"responses_rank{max(0, local_rank)}.jsonl"
+        save_to_jsonl(local_results, str(local_responses_file))
 
-            # Save collected samples
-            responses_file = output_dir / "responses.jsonl"
-            save_to_jsonl(samples, str(responses_file))
-            print(f"Saved responses to {responses_file}")
-
-        # Sync: other ranks wait for main to finish and load from file
-        if world_size > 1 and not is_main:
+        # Simple sync: wait for all ranks to finish
+        if world_size > 1:
             import time
-            responses_file = output_dir / "responses.jsonl"
-            # Wait for file to be created by rank 0
-            while not responses_file.exists():
-                time.sleep(1)
-            # Small delay to ensure file is fully written
-            time.sleep(2)
-            samples = load_from_jsonl(str(responses_file))
+            # Create a done marker file
+            done_file = output_dir / f".done_rank{max(0, local_rank)}"
+            done_file.touch()
+
+            # Wait for all ranks to be done
+            for rank in range(world_size):
+                other_done = output_dir / f".done_rank{rank}"
+                while not other_done.exists():
+                    time.sleep(0.5)
+
+            # Only main process merges results
+            if is_main:
+                all_results = []
+                for rank in range(world_size):
+                    rank_file = output_dir / f"responses_rank{rank}.jsonl"
+                    rank_results = load_from_jsonl(str(rank_file))
+                    all_results.extend(rank_results)
+
+                # Sort by original index to restore order
+                all_results.sort(key=lambda x: x.get("_original_idx", 0))
+                # Remove temporary field
+                for r in all_results:
+                    r.pop("_original_idx", None)
+
+                samples = all_results
+
+                # Save merged results
+                responses_file = output_dir / "responses.jsonl"
+                save_to_jsonl(samples, str(responses_file))
+                print(f"Saved merged responses to {responses_file}")
+
+                # Cleanup temp files
+                for rank in range(world_size):
+                    (output_dir / f"responses_rank{rank}.jsonl").unlink(missing_ok=True)
+                    (output_dir / f".done_rank{rank}").unlink(missing_ok=True)
+
+            # Other ranks load merged results
+            else:
+                time.sleep(1)  # Wait for main to merge
+                responses_file = output_dir / "responses.jsonl"
+                while not responses_file.exists():
+                    time.sleep(0.5)
+                time.sleep(1)  # Ensure file is fully written
+                samples = load_from_jsonl(str(responses_file))
+        else:
+            samples = local_results
 
     # Print ability distribution
     if is_main:
