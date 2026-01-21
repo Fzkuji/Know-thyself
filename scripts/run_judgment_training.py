@@ -159,6 +159,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--output_file", f"responses_epoch{epoch}.jsonl",
             "--label_mode", args.label_mode,
+            "--baseline", str(baseline_qa_file),
         ]
         run_command(cmd, f"{epoch}.2", "Evaluate SFT QA accuracy", model=current_model)
 

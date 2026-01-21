@@ -466,8 +466,21 @@ def main():
         if args.mode == "collect":
             # Print QA accuracy (can = correct, cannot = incorrect)
             correct = sum(1 for r in all_results if r["ability"] == "can")
-            qa_acc = correct / len(all_results) * 100
-            print(f"\nQA accuracy: {correct}/{len(all_results)} ({qa_acc:.1f}%)")
+            current_acc = correct / len(all_results) * 100
+
+            # Load baseline for comparison
+            baseline_acc = None
+            if args.baseline and Path(args.baseline).exists():
+                baseline_results = load_from_jsonl(args.baseline)
+                baseline_correct = sum(1 for r in baseline_results if r.get("ability") == "can")
+                baseline_acc = baseline_correct / len(baseline_results) * 100
+
+            if baseline_acc is not None:
+                diff = current_acc - baseline_acc
+                diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                print(f"\nQA accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)  [baseline: {baseline_acc:.1f}%, diff: {diff_str}]")
+            else:
+                print(f"\nQA accuracy: {correct}/{len(all_results)} ({current_acc:.1f}%)")
 
         elif args.mode == "test":
             correct = sum(1 for r in all_results if r["judgment_correct"])

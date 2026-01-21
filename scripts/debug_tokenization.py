@@ -226,6 +226,87 @@ def test_data_collator():
                     print(f"      ⚠️  Position {pos}: input={input_id}, label={label_id} (MISMATCH!)")
 
 
+def test_loss_computation():
+    """Test that loss would be computed correctly."""
+    import torch
+    import torch.nn.functional as F
+
+    print("\n" + "=" * 60)
+    print("Testing Loss Computation Simulation")
+    print("=" * 60)
+
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    # Create sample
+    sample = build_training_sample("What is 2+2?", "can", label_mode="binary")
+    full_text = tokenizer.apply_chat_template(sample["messages"], tokenize=False, add_generation_prompt=False)
+    messages_without_assistant = sample["messages"][:-1]
+    prompt_text = tokenizer.apply_chat_template(messages_without_assistant, tokenize=False, add_generation_prompt=True)
+
+    full_tokens = tokenizer(full_text, truncation=True, max_length=512, padding=False)
+    prompt_tokens = tokenizer(prompt_text, truncation=True, max_length=512, padding=False)
+
+    input_ids = full_tokens["input_ids"]
+    prompt_len = len(prompt_tokens["input_ids"])
+    labels = [-100] * prompt_len + input_ids[prompt_len:]
+
+    print(f"Input IDs: {input_ids}")
+    print(f"Labels: {labels}")
+    print(f"Prompt length: {prompt_len}")
+    print(f"Response tokens: {input_ids[prompt_len:]}")
+
+    # Simulate model output (random logits)
+    vocab_size = 151936  # Qwen vocab size
+    seq_len = len(input_ids)
+
+    # Create fake logits
+    torch.manual_seed(42)
+    logits = torch.randn(1, seq_len, vocab_size)
+
+    # Create labels tensor
+    labels_tensor = torch.tensor([labels])
+
+    # Shift for causal LM loss (predict next token)
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels_tensor[..., 1:].contiguous()
+
+    print(f"\nShift logits shape: {shift_logits.shape}")
+    print(f"Shift labels shape: {shift_labels.shape}")
+
+    # Count how many tokens will contribute to loss
+    non_masked = (shift_labels != -100).sum().item()
+    print(f"Non-masked tokens for loss: {non_masked}")
+
+    # Compute loss
+    loss = F.cross_entropy(
+        shift_logits.view(-1, vocab_size),
+        shift_labels.view(-1),
+        ignore_index=-100
+    )
+
+    print(f"\nSimulated loss: {loss.item():.4f}")
+
+    # Expected loss for random predictions
+    expected_random_loss = torch.log(torch.tensor(vocab_size)).item()
+    print(f"Expected random loss (log(vocab_size)): {expected_random_loss:.4f}")
+
+    if loss.item() < expected_random_loss * 2:
+        print("✓ Loss is in reasonable range for random logits")
+    else:
+        print("⚠️  Loss seems too high!")
+
+    # Check that the right positions are being used
+    print("\nPositions contributing to loss:")
+    for i, label in enumerate(shift_labels[0].tolist()):
+        if label != -100:
+            token_text = tokenizer.decode([label])
+            print(f"  Position {i}: label={label} ({repr(token_text)})")
+
+
 if __name__ == "__main__":
     main()
     test_data_collator()
+    test_loss_computation()
