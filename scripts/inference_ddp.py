@@ -376,13 +376,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if is_main:
-        print(f"\n{'='*60}")
-        print(f"Inference DDP - Mode: {args.mode}")
-        print(f"{'='*60}")
-        print(f"Model: {args.model}")
-        print(f"World size: {world_size}")
-
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -391,9 +384,6 @@ def main():
 
     # Load model on this GPU
     device = f"cuda:{local_rank}"
-    if is_main:
-        print(f"\nLoading model...")
-
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16,
@@ -403,18 +393,11 @@ def main():
     # Load data
     if args.input:
         samples = load_from_jsonl(args.input)
-        if is_main:
-            print(f"Loaded {len(samples)} samples from {args.input}")
     else:
         samples = load_triviaqa(split=args.split, num_samples=args.num_samples)
-        if is_main:
-            print(f"Loaded {len(samples)} samples from TriviaQA {args.split}")
 
     # Run inference
     if args.mode == "collect":
-        if is_main:
-            print(f"\nCollecting responses ({args.label_mode} mode)...")
-
         if args.label_mode == "binary":
             local_results = collect_responses_binary(
                 samples, model, tokenizer,
@@ -437,9 +420,6 @@ def main():
         default_output = "responses.jsonl"
 
     elif args.mode == "test":
-        if is_main:
-            print(f"\nTesting judgment accuracy ({args.label_mode} mode)...")
-
         local_results = test_judgment_accuracy(
             samples, model, tokenizer,
             batch_size=args.batch_size,
@@ -452,9 +432,6 @@ def main():
         default_output = "tested.jsonl"
 
     else:  # eval_qa
-        if is_main:
-            print(f"\nEvaluating QA accuracy...")
-
         local_results = eval_qa_accuracy(
             samples, model, tokenizer,
             batch_size=args.batch_size,
@@ -484,7 +461,6 @@ def main():
         output_file = args.output_file or default_output
         output_path = output_dir / output_file
         save_to_jsonl(all_results, str(output_path))
-        print(f"\nSaved {len(all_results)} results to {output_path}")
 
         # Print stats
         if args.mode == "collect":
