@@ -464,12 +464,10 @@ def main():
 
         # Print stats
         if args.mode == "collect":
-            ability_counts = {}
-            for r in all_results:
-                ability_counts[r["ability"]] = ability_counts.get(r["ability"], 0) + 1
-            print(f"\nAbility distribution:")
-            for ability, count in sorted(ability_counts.items()):
-                print(f"  {ability}: {count} ({count/len(all_results)*100:.1f}%)")
+            # Print QA accuracy (can = correct, cannot = incorrect)
+            correct = sum(1 for r in all_results if r["ability"] == "can")
+            qa_acc = correct / len(all_results) * 100
+            print(f"\nQA accuracy: {correct}/{len(all_results)} ({qa_acc:.1f}%)")
 
         elif args.mode == "test":
             correct = sum(1 for r in all_results if r["judgment_correct"])
@@ -530,11 +528,16 @@ def main():
             correct = sum(1 for r in all_results if r["eval_correct"])
             current_acc = correct / len(all_results) * 100
 
-            # Load baseline for comparison
+            # Load baseline for comparison (supports both responses.jsonl and eval_qa.jsonl formats)
             baseline_acc = None
             if args.baseline and Path(args.baseline).exists():
                 baseline_results = load_from_jsonl(args.baseline)
-                baseline_correct = sum(1 for r in baseline_results if r["eval_correct"])
+                # Check which field exists: "eval_correct" (eval_qa) or "ability" (collect)
+                if baseline_results and "eval_correct" in baseline_results[0]:
+                    baseline_correct = sum(1 for r in baseline_results if r["eval_correct"])
+                else:
+                    # responses.jsonl uses "ability" field (can = correct)
+                    baseline_correct = sum(1 for r in baseline_results if r.get("ability") == "can")
                 baseline_acc = baseline_correct / len(baseline_results) * 100
 
             if baseline_acc is not None:

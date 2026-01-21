@@ -77,7 +77,7 @@ def main():
     print(f"GPUs: {args.num_gpus}")
     print(f"Label mode: {args.label_mode}")
 
-    # Step 0.1: Collect responses to get ground truth ability labels
+    # Step 0.1: Evaluate pretrained QA accuracy (collect responses, get ground truth labels)
     if not args.skip_collect and not responses_file.exists():
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -89,25 +89,11 @@ def main():
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.1", "Collect responses (generate ground truth)", model=args.model)
+        run_command(cmd, "0.1", "Evaluate pretrained QA accuracy", model=args.model)
     else:
-        print(f"\n[0.1] Skipping response collection (using {responses_file})")
+        print(f"\n[0.1] Skipping (using existing {responses_file})")
 
-    # Step 0.2: Evaluate pretrained QA accuracy
-    if not args.skip_qa_eval and args.start_epoch == 1:
-        cmd = [
-            "torchrun", f"--nproc_per_node={args.num_gpus}",
-            str(scripts_dir / "inference_ddp.py"),
-            "--mode", "eval_qa",
-            "--model", args.model,
-            "--input", str(responses_file),
-            "--output_dir", str(output_dir),
-            "--batch_size", str(args.batch_size),
-            "--output_file", "eval_qa_epoch0.jsonl",
-        ]
-        run_command(cmd, "0.2", "Evaluate pretrained QA accuracy", model=args.model)
-
-    # Step 0.3: Evaluate pretrained judgment accuracy
+    # Step 0.2: Evaluate pretrained judgment accuracy
     if args.start_epoch == 1:
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -120,10 +106,11 @@ def main():
             "--output_file", "tested_epoch0.jsonl",
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.3", "Evaluate pretrained judgment accuracy", model=args.model)
+        run_command(cmd, "0.2", "Evaluate pretrained judgment accuracy", model=args.model)
 
     # Baseline files for comparison
-    baseline_qa_file = output_dir / "eval_qa_epoch0.jsonl"
+    # QA baseline comes from responses.jsonl (collect step already has QA results)
+    baseline_qa_file = responses_file
     baseline_judgment_file = output_dir / "tested_epoch0.jsonl"
 
     # Training loop
@@ -162,22 +149,7 @@ def main():
         if epoch > 1 and tested_file.exists():
             tested_file.unlink()
 
-        # Step N.2: Evaluate QA accuracy after training
-        if not args.skip_qa_eval:
-            cmd = [
-                "torchrun", f"--nproc_per_node={args.num_gpus}",
-                str(scripts_dir / "inference_ddp.py"),
-                "--mode", "eval_qa",
-                "--model", current_model,
-                "--input", str(responses_file),
-                "--output_dir", str(output_dir),
-                "--batch_size", str(args.batch_size),
-                "--output_file", f"eval_qa_epoch{epoch}.jsonl",
-                "--baseline", str(baseline_qa_file),
-            ]
-            run_command(cmd, f"{epoch}.2", "Evaluate QA accuracy", model=current_model)
-
-        # Step N.3: Evaluate judgment accuracy after training
+        # Step N.2: Evaluate judgment accuracy after training
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
             str(scripts_dir / "inference_ddp.py"),
@@ -190,7 +162,22 @@ def main():
             "--label_mode", args.label_mode,
             "--baseline", str(baseline_judgment_file),
         ]
-        run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy", model=current_model)
+        run_command(cmd, f"{epoch}.2", "Evaluate judgment accuracy", model=current_model)
+
+        # Step N.3: Evaluate QA accuracy after training (detect degradation)
+        if not args.skip_qa_eval:
+            cmd = [
+                "torchrun", f"--nproc_per_node={args.num_gpus}",
+                str(scripts_dir / "inference_ddp.py"),
+                "--mode", "eval_qa",
+                "--model", current_model,
+                "--input", str(responses_file),
+                "--output_dir", str(output_dir),
+                "--batch_size", str(args.batch_size),
+                "--output_file", f"eval_qa_epoch{epoch}.jsonl",
+                "--baseline", str(baseline_qa_file),
+            ]
+            run_command(cmd, f"{epoch}.3", "Evaluate QA accuracy (detect degradation)", model=current_model)
 
     # Print summary
     print_summary(output_dir, args.epochs, args.skip_qa_eval)
