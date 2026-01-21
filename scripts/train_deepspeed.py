@@ -129,15 +129,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if is_main:
-        print(f"\n{'='*60}")
-        print("DeepSpeed Training")
-        print(f"{'='*60}")
-        print(f"Model: {args.model}")
-        print(f"Input: {args.input}")
-        print(f"Output: {args.output_dir}")
-        print(f"Label mode: {args.label_mode}")
-
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -146,8 +137,6 @@ def main():
 
     # Load samples
     samples = load_from_jsonl(args.input)
-    if is_main:
-        print(f"Loaded {len(samples)} samples")
 
     # Filter samples
     if args.only_incorrect:
@@ -156,15 +145,6 @@ def main():
     else:
         # Train on all samples (to prevent forgetting)
         train_samples = samples
-
-    if is_main:
-        correct = sum(1 for s in samples if s.get("judgment_correct", False))
-        incorrect = len(samples) - correct
-        print(f"Judgment accuracy: {correct}/{len(samples)} ({correct/len(samples)*100:.1f}%)")
-        if args.only_incorrect:
-            print(f"Training on: {len(train_samples)} incorrect samples only")
-        else:
-            print(f"Training on: {len(train_samples)} samples (all, to prevent forgetting)")
 
     if len(train_samples) == 0:
         if is_main:
@@ -186,9 +166,6 @@ def main():
     )
 
     # Load model (no device_map for DeepSpeed)
-    if is_main:
-        print(f"\nLoading model...")
-
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16,
@@ -228,15 +205,9 @@ def main():
         processing_class=tokenizer,
     )
 
-    if is_main:
-        print(f"\nTraining on {len(train_samples)} samples...")
-
     train_result = trainer.train()
 
     # Save model (all ranks must participate for ZeRO-3)
-    if is_main:
-        print(f"\nSaving model to {output_dir}...")
-
     # For ZeRO-3, all ranks must call save_model to gather weights
     trainer.save_model(str(output_dir))
 

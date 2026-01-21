@@ -24,13 +24,15 @@ import sys
 from pathlib import Path
 
 
-def run_command(cmd, step_label, desc):
+def run_command(cmd, step_label, desc, model=None, input_file=None):
     """Run a command and handle errors."""
     print(f"\n{'='*60}")
     print(f"[{step_label}] {desc}")
+    if model:
+        print(f"  Model: {model}")
+    if input_file:
+        print(f"  Input: {input_file}")
     print(f"{'='*60}")
-    print(f"Command: {' '.join(cmd)}")
-    print()
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -86,7 +88,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.1", "Collect responses (generate ground truth)")
+        run_command(cmd, "0.1", "Collect responses (generate ground truth)", model=args.model)
     else:
         print(f"\n[0.1] Skipping response collection (using {responses_file})")
 
@@ -102,7 +104,7 @@ def main():
             "--batch_size", str(args.batch_size),
             "--output_file", "eval_qa_epoch0.jsonl",
         ]
-        run_command(cmd, "0.2", "Evaluate pretrained QA accuracy")
+        run_command(cmd, "0.2", "Evaluate pretrained QA accuracy", model=args.model)
 
     # Step 0.3: Evaluate pretrained judgment accuracy
     if args.start_epoch == 1:
@@ -117,7 +119,7 @@ def main():
             "--output_file", "tested_epoch0.jsonl",
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.3", "Evaluate pretrained judgment accuracy")
+        run_command(cmd, "0.3", "Evaluate pretrained judgment accuracy", model=args.model)
 
     # Baseline files for comparison
     baseline_qa_file = output_dir / "eval_qa_epoch0.jsonl"
@@ -150,7 +152,7 @@ def main():
             "--lr", str(args.lr),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, f"{epoch}.1", "Train judgment")
+        run_command(cmd, f"{epoch}.1", "Train judgment", model=current_model, input_file=str(tested_file))
 
         # Update model path for next epoch
         current_model = str(epoch_dir)
@@ -172,7 +174,7 @@ def main():
                 "--output_file", f"eval_qa_epoch{epoch}.jsonl",
                 "--baseline", str(baseline_qa_file),
             ]
-            run_command(cmd, f"{epoch}.2", "Evaluate QA accuracy")
+            run_command(cmd, f"{epoch}.2", "Evaluate QA accuracy", model=current_model)
 
         # Step N.3: Evaluate judgment accuracy after training
         cmd = [
@@ -187,7 +189,7 @@ def main():
             "--label_mode", args.label_mode,
             "--baseline", str(baseline_judgment_file),
         ]
-        run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy")
+        run_command(cmd, f"{epoch}.3", "Evaluate judgment accuracy", model=current_model)
 
     print(f"\n{'#'*60}")
     print("Training Complete!")
