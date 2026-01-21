@@ -74,29 +74,63 @@ class DataCollatorForCausalLM:
 
 
 def preprocess_function(examples, tokenizer, label_mode="binary"):
-    """Preprocess judgment samples for training."""
-    texts = []
+    """Preprocess judgment samples for training.
+
+    Only compute loss on assistant response (the judgment label),
+    not on the system prompt or user question.
+    """
+    all_input_ids = []
+    all_labels = []
+
     for i in range(len(examples["question"])):
         question = examples["question"][i]
         ability = examples["ability"][i]
 
         sample = build_training_sample(question, ability, label_mode=label_mode)
-        text = tokenizer.apply_chat_template(
+
+        # Tokenize the full conversation
+        full_text = tokenizer.apply_chat_template(
             sample["messages"],
             tokenize=False,
             add_generation_prompt=False
         )
-        texts.append(text)
 
-    tokenized = tokenizer(
-        texts,
-        truncation=True,
-        max_length=512,
-        padding=False,
-    )
+        # Tokenize without assistant response to find where it starts
+        messages_without_assistant = sample["messages"][:-1]  # system + user only
+        prompt_text = tokenizer.apply_chat_template(
+            messages_without_assistant,
+            tokenize=False,
+            add_generation_prompt=True  # This adds the assistant turn start
+        )
 
-    tokenized["labels"] = tokenized["input_ids"].copy()
-    return tokenized
+        # Tokenize both
+        full_tokens = tokenizer(
+            full_text,
+            truncation=True,
+            max_length=512,
+            padding=False,
+        )
+        prompt_tokens = tokenizer(
+            prompt_text,
+            truncation=True,
+            max_length=512,
+            padding=False,
+        )
+
+        input_ids = full_tokens["input_ids"]
+        prompt_len = len(prompt_tokens["input_ids"])
+
+        # Create labels: -100 for prompt, actual tokens for response
+        labels = [-100] * prompt_len + input_ids[prompt_len:]
+
+        all_input_ids.append(input_ids)
+        all_labels.append(labels)
+
+    return {
+        "input_ids": all_input_ids,
+        "attention_mask": [[1] * len(ids) for ids in all_input_ids],
+        "labels": all_labels,
+    }
 
 
 def main():
