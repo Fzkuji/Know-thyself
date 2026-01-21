@@ -49,7 +49,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory (auto-generated if not specified)")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--num_gpus", type=int, default=8)
-    parser.add_argument("--num_samples", type=int, default=5000)
+    parser.add_argument("--num_samples", type=int, default=5000, help="Number of training samples")
+    parser.add_argument("--num_val_samples", type=int, default=1000, help="Number of validation samples")
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--label_mode", type=str, default="binary", choices=["binary", "uncertainty"])
@@ -74,6 +75,7 @@ def main():
 
     scripts_dir = Path(__file__).parent
     responses_file = output_dir / "responses.jsonl"
+    val_responses_file = output_dir / "val_responses.jsonl"
 
     print(f"\n{'#'*60}")
     print("Judgment Training Pipeline")
@@ -83,8 +85,14 @@ def main():
     print(f"Epochs: {args.epochs}")
     print(f"GPUs: {args.num_gpus}")
     print(f"Label mode: {args.label_mode}")
+    print(f"Train samples: {args.num_samples}")
+    print(f"Val samples: {args.num_val_samples}")
 
-    # Step 0.1: Evaluate pretrained QA accuracy (collect responses, get ground truth labels)
+    # =========================================================================
+    # Step 0: Evaluate pretrained model on both train and validation sets
+    # =========================================================================
+
+    # Step 0.1: Evaluate pretrained QA accuracy (Train)
     if not args.skip_collect and not responses_file.exists():
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -93,14 +101,15 @@ def main():
             "--model", args.model,
             "--output_dir", str(output_dir),
             "--num_samples", str(args.num_samples),
+            "--split", "train",
             "--batch_size", str(args.batch_size),
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.1", "Evaluate pretrained QA accuracy", model=args.model)
+        run_command(cmd, "0.1", "Evaluate pretrained QA accuracy (Train)", model=args.model)
     else:
         print(f"\n[0.1] Skipping (using existing {responses_file})")
 
-    # Step 0.2: Evaluate pretrained judgment accuracy
+    # Step 0.2: Evaluate pretrained judgment accuracy (Train)
     if args.start_epoch == 1:
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -113,12 +122,46 @@ def main():
             "--output_file", "tested_epoch0.jsonl",
             "--label_mode", args.label_mode,
         ]
-        run_command(cmd, "0.2", "Evaluate pretrained judgment accuracy", model=args.model)
+        run_command(cmd, "0.2", "Evaluate pretrained judgment accuracy (Train)", model=args.model)
+
+    # Step 0.3: Evaluate pretrained QA accuracy (Validation)
+    if not args.skip_collect and not val_responses_file.exists():
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "collect",
+            "--model", args.model,
+            "--output_dir", str(output_dir),
+            "--num_samples", str(args.num_val_samples),
+            "--split", "validation",
+            "--batch_size", str(args.batch_size),
+            "--label_mode", args.label_mode,
+            "--output_file", "val_responses.jsonl",
+        ]
+        run_command(cmd, "0.3", "Evaluate pretrained QA accuracy (Val)", model=args.model)
+    else:
+        print(f"\n[0.3] Skipping (using existing {val_responses_file})")
+
+    # Step 0.4: Evaluate pretrained judgment accuracy (Validation)
+    if args.start_epoch == 1:
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "test",
+            "--model", args.model,
+            "--input", str(val_responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", "val_tested_epoch0.jsonl",
+            "--label_mode", args.label_mode,
+        ]
+        run_command(cmd, "0.4", "Evaluate pretrained judgment accuracy (Val)", model=args.model)
 
     # Baseline files for comparison
-    # QA baseline comes from responses.jsonl (collect step already has QA results)
     baseline_qa_file = responses_file
     baseline_judgment_file = output_dir / "tested_epoch0.jsonl"
+    baseline_val_qa_file = val_responses_file
+    baseline_val_judgment_file = output_dir / "val_tested_epoch0.jsonl"
 
     # Training loop
     current_model = args.model
@@ -170,7 +213,7 @@ def main():
         ]
         run_command(cmd, f"{epoch}.2", "Evaluate SFT QA accuracy", model=current_model)
 
-        # Step N.3: Evaluate judgment accuracy after training
+        # Step N.3: Evaluate judgment accuracy after training (Train)
         responses_epoch_file = output_dir / f"responses_epoch{epoch}.jsonl"
         cmd = [
             "torchrun", f"--nproc_per_node={args.num_gpus}",
@@ -184,14 +227,45 @@ def main():
             "--label_mode", args.label_mode,
             "--baseline", str(baseline_judgment_file),
         ]
-        run_command(cmd, f"{epoch}.3", "Evaluate SFT judgment accuracy", model=current_model)
+        run_command(cmd, f"{epoch}.3", "Evaluate SFT judgment accuracy (Train)", model=current_model)
+
+        # Step N.4: Evaluate QA accuracy after training (Validation)
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "collect",
+            "--model", current_model,
+            "--input", str(val_responses_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", f"val_responses_epoch{epoch}.jsonl",
+            "--label_mode", args.label_mode,
+            "--baseline", str(baseline_val_qa_file),
+        ]
+        run_command(cmd, f"{epoch}.4", "Evaluate SFT QA accuracy (Val)", model=current_model)
+
+        # Step N.5: Evaluate judgment accuracy after training (Validation)
+        val_responses_epoch_file = output_dir / f"val_responses_epoch{epoch}.jsonl"
+        cmd = [
+            "torchrun", f"--nproc_per_node={args.num_gpus}",
+            str(scripts_dir / "inference_ddp.py"),
+            "--mode", "test",
+            "--model", current_model,
+            "--input", str(val_responses_epoch_file),
+            "--output_dir", str(output_dir),
+            "--batch_size", str(args.batch_size),
+            "--output_file", f"val_tested_epoch{epoch}.jsonl",
+            "--label_mode", args.label_mode,
+            "--baseline", str(baseline_val_judgment_file),
+        ]
+        run_command(cmd, f"{epoch}.5", "Evaluate SFT judgment accuracy (Val)", model=current_model)
 
     # Print summary
     print_summary(output_dir, args.epochs)
 
 
 def print_summary(output_dir: Path, epochs: int):
-    """Print summary of all epochs."""
+    """Print summary of all epochs with train and validation results."""
     print(f"\n{'#'*60}")
     print("Training Complete - Summary")
     print(f"{'#'*60}")
@@ -201,16 +275,15 @@ def print_summary(output_dir: Path, epochs: int):
     for epoch in range(0, epochs + 1):
         epoch_result = {"epoch": epoch}
 
-        # Read judgment accuracy from tested_epochN.jsonl
+        # Read Train judgment accuracy from tested_epochN.jsonl
         judgment_file = output_dir / f"tested_epoch{epoch}.jsonl"
         if judgment_file.exists():
             with open(judgment_file) as f:
                 samples = [json.loads(line) for line in f]
             correct = sum(1 for s in samples if s.get("judgment_correct", False))
-            epoch_result["judgment_acc"] = correct / len(samples) * 100 if samples else 0
-            epoch_result["judgment_total"] = len(samples)
+            epoch_result["train_judgment_acc"] = correct / len(samples) * 100 if samples else 0
 
-        # Read QA accuracy from responses.jsonl (epoch 0) or responses_epochN.jsonl (epoch N)
+        # Read Train QA accuracy from responses.jsonl (epoch 0) or responses_epochN.jsonl (epoch N)
         if epoch == 0:
             qa_file = output_dir / "responses.jsonl"
         else:
@@ -218,32 +291,58 @@ def print_summary(output_dir: Path, epochs: int):
         if qa_file.exists():
             with open(qa_file) as f:
                 samples = [json.loads(line) for line in f]
-            # ability == "can" means correct
             correct = sum(1 for s in samples if s.get("ability") == "can")
-            epoch_result["qa_acc"] = correct / len(samples) * 100 if samples else 0
+            epoch_result["train_qa_acc"] = correct / len(samples) * 100 if samples else 0
+
+        # Read Validation judgment accuracy from val_tested_epochN.jsonl
+        val_judgment_file = output_dir / f"val_tested_epoch{epoch}.jsonl"
+        if val_judgment_file.exists():
+            with open(val_judgment_file) as f:
+                samples = [json.loads(line) for line in f]
+            correct = sum(1 for s in samples if s.get("judgment_correct", False))
+            epoch_result["val_judgment_acc"] = correct / len(samples) * 100 if samples else 0
+
+        # Read Validation QA accuracy from val_responses.jsonl (epoch 0) or val_responses_epochN.jsonl (epoch N)
+        if epoch == 0:
+            val_qa_file = output_dir / "val_responses.jsonl"
+        else:
+            val_qa_file = output_dir / f"val_responses_epoch{epoch}.jsonl"
+        if val_qa_file.exists():
+            with open(val_qa_file) as f:
+                samples = [json.loads(line) for line in f]
+            correct = sum(1 for s in samples if s.get("ability") == "can")
+            epoch_result["val_qa_acc"] = correct / len(samples) * 100 if samples else 0
 
         results.append(epoch_result)
 
-    # Print table
-    print(f"\n{'Epoch':<8} {'Judgment Acc':<15} {'QA Acc':<12}")
-    print("-" * 40)
+    # Print table with 4 columns
+    print(f"\n{'Epoch':<8} {'Train Judg':<12} {'Train QA':<12} {'Val Judg':<12} {'Val QA':<12}")
+    print("-" * 60)
 
     for r in results:
         epoch_str = f"{r['epoch']}"
-        judgment_str = f"{r.get('judgment_acc', 0):.1f}%" if "judgment_acc" in r else "N/A"
-        qa_str = f"{r.get('qa_acc', 0):.1f}%" if "qa_acc" in r else "N/A"
-        print(f"{epoch_str:<8} {judgment_str:<15} {qa_str:<12}")
+        train_judg = f"{r.get('train_judgment_acc', 0):.1f}%" if "train_judgment_acc" in r else "N/A"
+        train_qa = f"{r.get('train_qa_acc', 0):.1f}%" if "train_qa_acc" in r else "N/A"
+        val_judg = f"{r.get('val_judgment_acc', 0):.1f}%" if "val_judgment_acc" in r else "N/A"
+        val_qa = f"{r.get('val_qa_acc', 0):.1f}%" if "val_qa_acc" in r else "N/A"
+        print(f"{epoch_str:<8} {train_judg:<12} {train_qa:<12} {val_judg:<12} {val_qa:<12}")
 
-    # Print improvement
-    if len(results) >= 2 and "judgment_acc" in results[0] and "judgment_acc" in results[-1]:
-        judgment_diff = results[-1]["judgment_acc"] - results[0]["judgment_acc"]
-        diff_str = f"+{judgment_diff:.1f}%" if judgment_diff >= 0 else f"{judgment_diff:.1f}%"
-        print(f"\nJudgment improvement: {diff_str} (epoch 0 → epoch {epochs})")
+    # Print improvement summary
+    print(f"\n{'='*60}")
+    print("Improvement (epoch 0 → epoch {})".format(epochs))
+    print("="*60)
 
-    if len(results) >= 2 and "qa_acc" in results[0] and "qa_acc" in results[-1]:
-        qa_diff = results[-1]["qa_acc"] - results[0]["qa_acc"]
-        diff_str = f"+{qa_diff:.1f}%" if qa_diff >= 0 else f"{qa_diff:.1f}%"
-        print(f"QA change: {diff_str} (epoch 0 → epoch {epochs})")
+    if len(results) >= 2:
+        for metric, label in [
+            ("train_judgment_acc", "Train Judgment"),
+            ("train_qa_acc", "Train QA"),
+            ("val_judgment_acc", "Val Judgment"),
+            ("val_qa_acc", "Val QA"),
+        ]:
+            if metric in results[0] and metric in results[-1]:
+                diff = results[-1][metric] - results[0][metric]
+                diff_str = f"+{diff:.1f}%" if diff >= 0 else f"{diff:.1f}%"
+                print(f"  {label:<16}: {diff_str}")
 
     print(f"\nFinal model: {output_dir / f'epoch_{epochs}'}")
 
