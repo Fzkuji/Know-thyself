@@ -358,6 +358,7 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
             judgment_correct = (predicted == ground_truth)
 
             result = sample.copy()
+            result["judgment_response"] = response  # Raw model output for debugging
             result["predicted_judgment"] = predicted
             result["judgment_correct"] = judgment_correct
             result["yes_prob"] = yes_prob  # Confidence score for AUROC
