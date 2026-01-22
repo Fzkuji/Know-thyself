@@ -55,7 +55,7 @@ def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_to
 
     for i in iterator:
         batch = local_samples[i:i + batch_size]
-        prompts = [format_question_prompt(s["question"]) for s in batch]
+        prompts = [format_question_prompt(s["question"], s.get("context")) for s in batch]
 
         formatted_prompts = []
         for prompt in prompts:
@@ -68,7 +68,7 @@ def collect_responses_binary(samples, model, tokenizer, batch_size=8, max_new_to
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2048,
+            max_length=4096,
         ).to(model.device)
 
         with torch.no_grad():
@@ -115,7 +115,7 @@ def collect_responses_uncertainty(samples, model, tokenizer, num_trials=10, batc
         iterator = tqdm(iterator, desc=f"Rank {local_rank} collecting responses")
 
     for idx, sample in enumerate(iterator):
-        prompt = format_question_prompt(sample["question"])
+        prompt = format_question_prompt(sample["question"], sample.get("context"))
         messages = [{"role": "user", "content": prompt}]
         formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
@@ -124,7 +124,7 @@ def collect_responses_uncertainty(samples, model, tokenizer, num_trials=10, batc
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2048,
+            max_length=4096,
         ).to(model.device)
 
         with torch.no_grad():
@@ -177,7 +177,7 @@ def eval_qa_accuracy(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
 
     for i in iterator:
         batch = local_samples[i:i + batch_size]
-        prompts = [format_question_prompt(s["question"]) for s in batch]
+        prompts = [format_question_prompt(s["question"], s.get("context")) for s in batch]
 
         formatted_prompts = []
         for prompt in prompts:
@@ -190,7 +190,7 @@ def eval_qa_accuracy(samples, model, tokenizer, batch_size=8, max_new_tokens=64,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2048,
+            max_length=4096,
         ).to(model.device)
 
         with torch.no_grad():
