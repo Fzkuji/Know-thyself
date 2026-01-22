@@ -97,8 +97,9 @@ def preprocess_function(examples, tokenizer, label_mode="binary"):
     for i in range(len(examples["question"])):
         question = examples["question"][i]
         ability = examples["ability"][i]
+        context = examples.get("context", [None] * len(examples["question"]))[i]
 
-        sample = build_training_sample(question, ability, label_mode=label_mode)
+        sample = build_training_sample(question, ability, label_mode=label_mode, context=context)
 
         # Tokenize the full conversation
         full_text = tokenizer.apply_chat_template(
@@ -115,17 +116,17 @@ def preprocess_function(examples, tokenizer, label_mode="binary"):
             add_generation_prompt=True  # This adds the assistant turn start
         )
 
-        # Tokenize both
+        # Tokenize both (use 4096 to accommodate context)
         full_tokens = tokenizer(
             full_text,
             truncation=True,
-            max_length=512,
+            max_length=4096,
             padding=False,
         )
         prompt_tokens = tokenizer(
             prompt_text,
             truncation=True,
-            max_length=512,
+            max_length=4096,
             padding=False,
         )
 

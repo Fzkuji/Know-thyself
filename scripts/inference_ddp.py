@@ -283,9 +283,16 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
 
         prompts = []
         for s in batch:
+            # Format user content with optional context
+            context = s.get("context")
+            if context:
+                user_content = f"Can you answer this question correctly?\n\nContext:\n{context}\n\nQuestion: {s['question']}"
+            else:
+                user_content = f"Can you answer this question correctly?\n\nQuestion: {s['question']}"
+
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {s['question']}"},
+                {"role": "user", "content": user_content},
             ]
             prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             prompts.append(prompt)
@@ -295,7 +302,7 @@ def test_judgment_accuracy(samples, model, tokenizer, batch_size=8,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=4096,  # Increased for context
         ).to(model.device)
 
         with torch.no_grad():

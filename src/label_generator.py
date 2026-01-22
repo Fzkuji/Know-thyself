@@ -75,7 +75,8 @@ def generate_label(ability: str, label_mode: str = "binary", include_reason: boo
     return templates.get(ability, templates.get("cannot", "\\boxed{no}"))
 
 
-def build_training_sample(question: str, ability: str, label_mode: str = "binary", include_reason: bool = False) -> Dict:
+def build_training_sample(question: str, ability: str, label_mode: str = "binary",
+                          include_reason: bool = False, context: Optional[str] = None) -> Dict:
     """
     Build a single training sample for metacognition.
 
@@ -84,6 +85,7 @@ def build_training_sample(question: str, ability: str, label_mode: str = "binary
         ability: Model's ability classification
         label_mode: "binary" or "uncertainty"
         include_reason: Whether to include reasoning in label
+        context: Optional context for reading comprehension tasks (e.g., HotpotQA)
 
     Returns:
         Training sample with input and output (using chat format)
@@ -91,25 +93,34 @@ def build_training_sample(question: str, ability: str, label_mode: str = "binary
     label = generate_label(ability, label_mode, include_reason)
     system_prompt = get_system_prompt(label_mode)
 
+    # Format user content with optional context
+    if context:
+        user_content = f"Can you answer this question correctly?\n\nContext:\n{context}\n\nQuestion: {question}"
+    else:
+        user_content = f"Can you answer this question correctly?\n\nQuestion: {question}"
+
     # Use chat format for training
     return {
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Can you answer this question correctly?\n\nQuestion: {question}"},
+            {"role": "user", "content": user_content},
             {"role": "assistant", "content": label}
         ],
         "question": question,  # Keep question for adaptive training
         "ability": ability,
+        "context": context,  # Keep context for reference
     }
 
 
-def build_training_dataset(samples: List[Dict], include_reason: bool = False) -> List[Dict]:
+def build_training_dataset(samples: List[Dict], include_reason: bool = False,
+                           label_mode: str = "binary") -> List[Dict]:
     """
     Build training dataset from evaluated samples.
 
     Args:
         samples: List of samples with 'question' and 'ability' fields
         include_reason: Whether to include reasoning
+        label_mode: "binary" or "uncertainty"
 
     Returns:
         List of training samples
@@ -119,7 +130,9 @@ def build_training_dataset(samples: List[Dict], include_reason: bool = False) ->
         train_sample = build_training_sample(
             question=sample["question"],
             ability=sample["ability"],
+            label_mode=label_mode,
             include_reason=include_reason,
+            context=sample.get("context"),  # Pass context if available
         )
         train_sample["id"] = sample.get("id", "")
         training_data.append(train_sample)
