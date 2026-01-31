@@ -97,30 +97,60 @@ pip install -r requirements.txt
 This is the **simplified single-phase pipeline** for training judgment ability with multi-GPU support.
 
 ```bash
-# Run with TriviaQA (default)
-python scripts/run_judgment_training.py \
-    --model Qwen/Qwen2.5-7B-Instruct \
-    --epochs 10 \
-    --num_gpus 8
-
-# Run with HotpotQA
+# Qwen2.5-7B + HotpotQA (with context)
 python scripts/run_judgment_training.py \
     --model Qwen/Qwen2.5-7B-Instruct \
     --dataset hotpotqa \
     --epochs 10 \
-    --num_gpus 8
+    --num_gpus 8 \
+    --num_samples 20000 \
+    --num_val_samples 5000 \
+    --label_mode binary \
+    --lr 4e-6 \
+    --batch_size 16
 
-# Custom settings
+# Qwen2.5-7B + TriviaQA (closed-book)
 python scripts/run_judgment_training.py \
     --model Qwen/Qwen2.5-7B-Instruct \
     --dataset triviaqa \
-    --num_samples 10000 \
-    --num_val_samples 2000 \
-    --epochs 5 \
-    --lr 1e-5 \
-    --batch_size 16 \
-    --num_gpus 8
+    --epochs 10 \
+    --num_gpus 8 \
+    --num_samples 20000 \
+    --num_val_samples 5000 \
+    --label_mode binary \
+    --lr 4e-6 \
+    --batch_size 16
+
+# GPT-OSS-20B + HotpotQA (with context, smaller batch size for 20B model)
+python scripts/run_judgment_training.py \
+    --model /data/public/llms/GPT-OSS/gpt-oss-20b \
+    --dataset hotpotqa \
+    --epochs 10 \
+    --num_gpus 8 \
+    --num_samples 20000 \
+    --num_val_samples 5000 \
+    --label_mode binary \
+    --lr 4e-6 \
+    --batch_size 2
+
+# GPT-OSS-20B + TriviaQA (closed-book)
+python scripts/run_judgment_training.py \
+    --model /data/public/llms/GPT-OSS/gpt-oss-20b \
+    --dataset triviaqa \
+    --epochs 10 \
+    --num_gpus 8 \
+    --num_samples 20000 \
+    --num_val_samples 5000 \
+    --label_mode binary \
+    --lr 4e-6 \
+    --batch_size 2
 ```
+
+**Hyperparameter Notes:**
+- **Learning Rate**: `4e-6` recommended (1e-5 too large degrades performance, 1e-6 too slow)
+- **Batch Size**: 16 for 7B models, 2 for 20B models (to avoid OOM with long contexts)
+- **Sample Size**: 20000 train / 5000 val is standard configuration
+- **Datasets**: HotpotQA uses context (open-book reading comprehension), TriviaQA is closed-book (tests world knowledge)
 
 **Parameters:**
 
